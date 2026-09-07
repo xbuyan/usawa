@@ -98,7 +98,7 @@ If you'd rather not use the blueprint, or already have infrastructure:
 2. Create a **Postgres** instance on Render (free tier available) — copy its
    connection string.
 3. Create a **Web Service**, connect your repo:
-   - **Build command:** `pip install -r requirements.txt`
+   - **Build command:** `pip install -r requirements.txt && FLASK_APP=app.py flask db upgrade`
    - **Start command:** `gunicorn app:app` (also defined in `Procfile`)
 4. Under Environment Variables, add `ANTHROPIC_API_KEY`, `SECRET_KEY`, and
    `DATABASE_URL` (the Postgres connection string from step 2). Generate a
@@ -106,10 +106,17 @@ If you'd rather not use the blueprint, or already have infrastructure:
    ```
    python3 -c "import secrets; print(secrets.token_hex(32))"
    ```
-5. Deploy. The app will create its tables automatically on first request via
-   `db.create_all()` — for a real production app with schema changes over
-   time, migrate to Flask-Migrate/Alembic instead of relying on this (see
-   "What's still missing" below).
+5. Deploy.
+
+**This build command matters — don't drop the `flask db upgrade` part.**
+Tables are NOT created automatically on Postgres. `db.create_all()` only
+runs for local SQLite dev convenience (see the `if __name__ == "__main__"`
+block in `app.py`) — gunicorn never executes that code path in production.
+Skipping the migration step means every table-dependent request (including
+registration) fails with `relation "users" does not exist` until you run
+`flask db upgrade` against the production database at least once. Baking
+it into the build command means it runs automatically on every deploy,
+including the very first one.
 
 ### Railway.app
 
