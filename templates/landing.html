@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Usawa — Equity audits built for the Kenyan market</title>
+<meta name="description" content="Usawa scores pay, hiring, and promotion equity against the EEOC four-fifths rule, with AI-generated findings HR and Legal teams can act on.">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<div class="topnav">
+  <a href="/" class="brand">Usawa</a>
+  <nav>
+    <a href="#methodology">Methodology</a>
+    <a href="#how-it-works">How it works</a>
+    {% if current_user.is_authenticated %}
+      <a href="/app" class="cta-link">Open the tool</a>
+    {% else %}
+      <a href="/login">Log in</a>
+      <a href="/register" class="cta-link">Get started</a>
+    {% endif %}
+  </nav>
+</div>
+
+<div class="landing-wrap">
+
+  <div class="hero">
+    <div>
+      <h1>Find the equity gaps before a regulator or a journalist does.</h1>
+      <p class="lede">
+        Usawa audits pay, hiring, and promotion data and scores it against
+        the same adverse-impact standard the EEOC uses — so HR and Legal
+        teams get findings they can act on, not just a diversity score.
+      </p>
+      <div class="cta-row">
+        <a href="/register" class="btn-primary" style="text-decoration:none;display:inline-block">Get started</a>
+        <a href="#methodology" class="btn-ghost" style="text-decoration:none;display:inline-block">See the methodology</a>
+      </div>
+    </div>
+
+    <div class="exhibit">
+      <p class="exhibit-label">Sample finding — promotion equity</p>
+      <div class="exhibit-row">
+        <span class="name">Promotion rate, Group A</span>
+        <span class="rate">13.3%</span>
+      </div>
+      <div class="exhibit-row">
+        <span class="name">Promotion rate, Group B</span>
+        <span class="rate">23.1%</span>
+      </div>
+      <div class="exhibit-divider"></div>
+      <div class="exhibit-ratio">
+        <span class="num">0.58</span>
+        <span class="label">selection-rate ratio<br>(EEOC threshold: 0.80)</span>
+      </div>
+      <div class="exhibit-verdict">Fails the four-fifths rule — flagged for review</div>
+    </div>
+  </div>
+
+  <div class="section" id="methodology">
+    <h2>Every finding traces back to a real standard</h2>
+    <p class="body-text">
+      Most DEI dashboards hand you a 0–100 score with no explanation of what
+      "good" means. Usawa scores the metrics that have a real legal test
+      against that test, and is explicit about the ones that don't.
+    </p>
+
+    <div class="citation-list">
+      <div class="citation-item">
+        <div>
+          <div class="cite-name">Four-fifths rule</div>
+          <div class="cite-source">29 CFR 1607.4(D), EEOC</div>
+        </div>
+        <div class="cite-desc">
+          Hiring funnel and promotion equity are scored against this
+          standard: a selection rate below 80% of the highest group's rate
+          is treated as evidence of adverse impact. This is the same
+          screening test the EEOC itself applies.
+        </div>
+      </div>
+
+      <div class="citation-item">
+        <div>
+          <div class="cite-name">Pay equity thresholds</div>
+          <div class="cite-source">Common consultancy practice</div>
+        </div>
+        <div class="cite-desc">
+          There's no single legal cutoff for pay gap percentage. Usawa uses
+          thresholds common among pay equity consultancies — an unexplained
+          gap of roughly 5% as the point worth investigating — and says so
+          plainly, rather than dressing it up as a legal finding.
+        </div>
+      </div>
+
+      <div class="citation-item">
+        <div>
+          <div class="cite-name">Representation pipeline</div>
+          <div class="cite-source">Descriptive analysis, not a legal test</div>
+        </div>
+        <div class="cite-desc">
+          "Leaky pipeline" drop-off across levels has no regulatory
+          standard. It's useful for spotting where representation erodes —
+          Usawa presents it as a signal to investigate, never as compliance
+          evidence.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="how-it-works">
+    <h2>From spreadsheet to findings in one sitting</h2>
+
+    <div class="steps-flow">
+      <div class="step-row">
+        <span class="step-num">1</span>
+        <div>
+          <div class="step-title">Upload employee and applicant data</div>
+          <div class="step-desc">Drop in a CSV export — pay, level, promotions, and hiring-funnel stage by candidate. No manual pre-aggregation required.</div>
+        </div>
+      </div>
+      <div class="step-row">
+        <span class="step-num">2</span>
+        <div>
+          <div class="step-title">Get a scored breakdown</div>
+          <div class="step-desc">Pay, promotion, hiring, and representation, each scored on its own defensible basis — not one vague number.</div>
+        </div>
+      </div>
+      <div class="step-row">
+        <span class="step-num">3</span>
+        <div>
+          <div class="step-title">Act on specific, assignable findings</div>
+          <div class="step-desc">AI-generated recommendations name the likely cause and a concrete fix — with the regulatory citation attached when one applies.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="cta-band">
+      <div>
+        <h3>Built for the Kenyan market</h3>
+        <p>Priced and positioned for local HR teams — not a Western enterprise tool with a Nairobi sales rep bolted on.</p>
+      </div>
+      <a href="/register" class="btn-primary" style="text-decoration:none;display:inline-block">Get started</a>
+    </div>
+  </div>
+
+</div>
+
+<div class="landing-footer">
+  Usawa — equity auditing for HR and Legal teams.
+</div>
+
+</body>
+</html>

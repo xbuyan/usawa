@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Create account — Usawa</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<div class="topnav"><a href="/" class="brand">Usawa</a><nav></nav></div>
+<div class="wrap" style="max-width:420px;margin-top:40px">
+  <header class="masthead">
+    <h1>Create your account</h1>
+    <p>Start your first audit.</p>
+  </header>
+
+  <div class="panel">
+    <div class="field" style="margin-bottom:14px">
+      <label>Organization name</label>
+      <input type="text" id="orgName" autocomplete="organization">
+    </div>
+    <div class="field" style="margin-bottom:14px">
+      <label>Email</label>
+      <input type="email" id="email" autocomplete="email">
+    </div>
+    <div class="field" style="margin-bottom:6px">
+      <label>Password</label>
+      <input type="password" id="password" autocomplete="new-password">
+    </div>
+    <p class="hint-text" style="margin-bottom:14px">At least 10 characters.</p>
+    <div class="btn-row">
+      <button class="btn-primary" id="registerBtn" style="width:100%">Create account</button>
+    </div>
+    <div class="error-box" id="errorBox" style="display:none;margin-top:12px"></div>
+    <p style="font-size:13px;color:var(--ink-soft);margin-top:16px;text-align:center">
+      Already have an account? <a href="/login">Log in</a>
+    </p>
+  </div>
+</div>
+
+<script>
+document.getElementById("registerBtn").addEventListener("click", async () => {
+  const organization_name = document.getElementById("orgName").value;
+  const email = document.getElementById("email").value;
+  const password = document.getElementById("password").value;
+  const errorBox = document.getElementById("errorBox");
+  errorBox.style.display = "none";
+
+  try {
+    const resp = await fetch("/api/auth/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password, organization_name }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      errorBox.textContent = data.error || "Registration failed.";
+      errorBox.style.display = "block";
+      return;
+    }
+    window.location.href = "/app";
+  } catch (err) {
+    errorBox.textContent = "Couldn't reach the server.";
+    errorBox.style.display = "block";
+  }
+});
+
+document.getElementById("password").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") document.getElementById("registerBtn").click();
+});
+</script>
+</body>
+</html>

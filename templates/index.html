@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Usawa — Equity Scorecard</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<div class="topnav">
+  <a href="/" class="brand">Usawa</a>
+  <nav>
+    {% if current_user.is_authenticated and current_user.organization_name %}
+      <span style="font-size:13px;color:var(--ink-soft)">{{ current_user.organization_name }}</span>
+    {% endif %}
+    <button class="btn-ghost" id="logoutBtn" style="padding:6px 12px;font-size:12px">Log out</button>
+  </nav>
+</div>
+<div class="app-shell">
+
+  <aside class="app-tabs">
+    <button class="tab-btn active" data-tab="data">Data entry</button>
+    <button class="tab-btn" data-tab="results">Scorecard &amp; insights</button>
+    <button class="tab-btn" data-tab="saved">Saved clients</button>
+  </aside>
+
+  <div class="app-content">
+
+  <header class="masthead">
+    <h1 id="tabTitle">Data entry</h1>
+    <p id="tabSubtitle">Enter your hiring, pay, and promotion data to generate a scorecard and AI-backed recommendations.</p>
+  </header>
+
+  <section data-tab-panel="saved" style="display:none">
+  <div class="panel">
+    <p class="panel-title"><span>SAVED CLIENTS</span></p>
+    <div id="savedClientsList"></div>
+  </div>
+  </section>
+
+  <section data-tab-panel="data">
+  <div class="panel">
+    <p class="panel-title">
+      <span>COMPANY DATA</span>
+      <button class="btn-ghost" id="loadSampleBtn" style="padding:4px 10px;font-size:12px">Load sample data</button>
+    </p>
+
+    <div class="field" style="margin-bottom:16px">
+      <label>Company name</label>
+      <input id="companyName" placeholder="e.g. Acme Software Inc.">
+    </div>
+
+    <div class="subhead" style="margin-top:0">Employee data (recommended)</div>
+    <p class="hint-text">One row per employee. We calculate pay, promotion, and representation gaps for you.</p>
+    <div class="upload-row">
+      <label class="upload-btn">Upload employee CSV
+        <input type="file" accept=".csv" id="employeeCsvInput" style="display:none">
+      </label>
+      <button class="btn-ghost" id="downloadEmployeeTemplate" style="padding:8px 14px;font-size:12.5px">Download template</button>
+    </div>
+    <div id="employeeSummary" style="display:none"></div>
+
+    <div class="subhead">Applicant data (recommended)</div>
+    <p class="hint-text">One row per candidate, with the furthest stage they reached. We calculate hiring funnel gaps for you.</p>
+    <div class="upload-row">
+      <label class="upload-btn">Upload applicant CSV
+        <input type="file" accept=".csv" id="applicantCsvInput" style="display:none">
+      </label>
+      <button class="btn-ghost" id="downloadApplicantTemplate" style="padding:8px 14px;font-size:12.5px">Download template</button>
+    </div>
+    <div id="applicantSummary" style="display:none"></div>
+
+    <div class="subhead">Review / edit values</div>
+
+    <div class="field-grid">
+      <div class="field"><label>Company size</label><input id="companySize"></div>
+      <div class="field"><label>Industry</label><input id="industry"></div>
+    </div>
+
+    <div class="subhead">Pay gap by level (%)</div>
+    <div class="field-grid three">
+      <div class="field"><label>IC</label><input id="payIC"></div>
+      <div class="field"><label>Manager</label><input id="payManager"></div>
+      <div class="field"><label>Director</label><input id="payDirector"></div>
+    </div>
+
+    <div class="subhead">Promotions</div>
+    <div class="field-grid">
+      <div class="field"><label>Group A promoted</label><input id="promoA"></div>
+      <div class="field"><label>Group A eligible</label><input id="eligA"></div>
+      <div class="field"><label>Group B promoted</label><input id="promoB"></div>
+      <div class="field"><label>Group B eligible</label><input id="eligB"></div>
+      <div class="field"><label>Group A months to promo</label><input id="ttpA"></div>
+      <div class="field"><label>Group B months to promo</label><input id="ttpB"></div>
+    </div>
+
+    <div class="subhead">Hiring funnel — Group A</div>
+    <div class="field-grid three">
+      <div class="field"><label>Applied</label><input id="fAapplied"></div>
+      <div class="field"><label>Interviewed</label><input id="fAinterviewed"></div>
+      <div class="field"><label>Offered</label><input id="fAoffered"></div>
+    </div>
+    <div class="field-grid" style="margin-top:10px">
+      <div class="field"><label>Hired</label><input id="fAhired"></div>
+    </div>
+
+    <div class="subhead">Hiring funnel — Group B</div>
+    <div class="field-grid three">
+      <div class="field"><label>Applied</label><input id="fBapplied"></div>
+      <div class="field"><label>Interviewed</label><input id="fBinterviewed"></div>
+      <div class="field"><label>Offered</label><input id="fBoffered"></div>
+    </div>
+    <div class="field-grid" style="margin-top:10px">
+      <div class="field"><label>Hired</label><input id="fBhired"></div>
+    </div>
+
+    <div class="subhead">Representation by level</div>
+    <p class="hint-text">Enter Group A's share of headcount at each level — Group B fills the rest automatically.</p>
+    <div class="field-grid three">
+      <div class="field"><label>IC</label><input id="repIC"><span class="group-b-hint" id="repIC-hint"></span></div>
+      <div class="field"><label>Manager</label><input id="repManager"><span class="group-b-hint" id="repManager-hint"></span></div>
+      <div class="field"><label>Director</label><input id="repDirector"><span class="group-b-hint" id="repDirector-hint"></span></div>
+    </div>
+    <div class="field-grid" style="margin-top:10px">
+      <div class="field"><label>Exec</label><input id="repExec"><span class="group-b-hint" id="repExec-hint"></span></div>
+    </div>
+
+    <div class="subhead">Job postings (one per line)</div>
+    <div class="field"><textarea rows="3" id="postings"></textarea></div>
+
+    <div class="btn-row">
+      <button class="btn-primary" id="runBtn">Run scorecard</button>
+    </div>
+
+    <div class="status-line" id="statusLine" style="display:none">
+      <span class="dot"></span> Calculating scores and generating recommendations…
+    </div>
+    <div class="error-box" id="errorBox" style="display:none"></div>
+  </div>
+  </section>
+
+  <section data-tab-panel="results" style="display:none">
+
+  <div class="panel" id="scorecardPanel" style="display:none">
+    <p class="panel-title"><span>SCORECARD</span></p>
+    <div class="score-hero">
+      <span class="num" id="overallScore">–</span>
+      <span class="label">overall equity score, out of 100</span>
+    </div>
+    <div id="scoreBars"></div>
+    <div class="btn-row" style="margin-top:6px">
+      <button class="btn-ghost" id="saveBtn">Save this report</button>
+    </div>
+    <div id="saveStatus" style="display:none;margin-top:10px"></div>
+  </div>
+
+  <div class="panel" id="insightsPanel" style="display:none">
+    <p class="panel-title"><span>AI RECOMMENDATIONS</span></p>
+    <p id="headlineSummary" style="font-size:14px;margin-top:0"></p>
+    <div id="findings"></div>
+    <div class="quick-win" id="quickWin" style="display:none">
+      <span class="tag">QUICK WIN</span>
+      <span class="content"></span>
+    </div>
+  </div>
+
+  <div class="panel" id="emptyState">
+    <div class="empty-state">Enter data on the Data entry tab (or load sample data) and run the scorecard to see results here.</div>
+  </div>
+
+  </section>
+
+  </div>
+</div>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
