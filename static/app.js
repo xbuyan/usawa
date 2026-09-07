@@ -23,6 +23,11 @@ let currentInsights = null;
 
 const $ = (id) => document.getElementById(id);
 
+function getCsrfToken() {
+  const meta = document.querySelector('meta[name="csrf-token"]');
+  return meta ? meta.getAttribute("content") : "";
+}
+
 function scoreColor(score) {
   if (score >= 75) return "var(--good)";
   if (score >= 50) return "var(--warn)";
@@ -143,7 +148,7 @@ async function runAnalysis() {
 
     const scoreResp = await fetch("/api/score", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-CSRFToken": getCsrfToken() },
       body: JSON.stringify(formSnapshot),
     });
     const scoreData = await safeJson(scoreResp);
@@ -154,7 +159,7 @@ async function runAnalysis() {
 
     const insightsResp = await fetch("/api/insights", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-CSRFToken": getCsrfToken() },
       body: JSON.stringify({
         scorecard: currentScorecard,
         company_size: parseInt(formSnapshot.companySize) || null,
@@ -237,7 +242,11 @@ async function uploadCsv(endpoint, file, onSuccess, summaryElId) {
   showError(null);
 
   try {
-    const resp = await fetch(endpoint, { method: "POST", body: formData });
+    const resp = await fetch(endpoint, {
+      method: "POST",
+      headers: { "X-CSRFToken": getCsrfToken() },
+      body: formData,
+    });
     const data = await resp.json();
     if (!resp.ok) {
       showError(data.error || "Upload failed.");
@@ -378,7 +387,10 @@ async function loadClient(id) {
 }
 
 async function deleteClient(id) {
-  await fetch(`/api/clients/${id}`, { method: "DELETE" });
+  await fetch(`/api/clients/${id}`, {
+    method: "DELETE",
+    headers: { "X-CSRFToken": getCsrfToken() },
+  });
   refreshSavedClients();
 }
 
@@ -390,7 +402,7 @@ async function saveCurrentReport() {
   try {
     const resp = await fetch("/api/clients", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-CSRFToken": getCsrfToken() },
       body: JSON.stringify({
         company_name: formSnapshot.companyName || "Untitled",
         form: formSnapshot,
@@ -449,7 +461,10 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   $("logoutBtn").addEventListener("click", async () => {
-    await fetch("/api/auth/logout", { method: "POST" });
+    await fetch("/api/auth/logout", {
+      method: "POST",
+      headers: { "X-CSRFToken": getCsrfToken() },
+    });
     window.location.href = "/login";
   });
 

@@ -121,48 +121,115 @@ repo, attach a Postgres plugin, set the same three environment variables
 ## Security decisions already built in
 
 Since you asked for security as a foundation, here's what's already handled
-and why, so you can speak to it directly:
+and why, so you can speak to it directly. Every claim below was actually
+tested, not just written — see `tests/` for the automated suite.
 
 - **Passwords** are never stored in plain text — only a salted scrypt hash
   (Werkzeug's `generate_password_hash`), which is slow-by-design and resistant
   to brute-force/rainbow-table attacks, unlike a fast hash like plain SHA256.
 - **Login errors are deliberately vague** ("Invalid email or password" for
-  both a wrong email and a wrong password) — this prevents an attacker from
-  using the login form to enumerate which emails have accounts.
+  both a wrong email and a wrong password) — tested directly that both cases
+  produce an identical error message, preventing account enumeration.
 - **Every saved report is scoped to `user_id`** at the database query level —
-  one user can never list, view, or delete another user's data, even by
-  guessing report IDs (tested directly: user B gets an empty list, not an
-  error revealing user A's data exists).
+  tested directly: a second user's client list comes back empty, and
+  fetching or deleting another user's report by ID returns 404, not their data.
+- **CSRF protection** (Flask-WTF) — every state-changing request needs a
+  valid token, sent via the `X-CSRFToken` header from the frontend. Tested
+  directly: a request without the token is rejected (400), the same request
+  with it succeeds (201).
+- **Rate limiting** (Flask-Limiter) — login, registration, CSV uploads, and
+  the AI insights endpoint (which costs real money per call) are capped.
+  **Known limitation:** the default in-memory storage only enforces limits
+  correctly with a single process — running multiple gunicorn workers means
+  each worker counts separately, so the effective limit becomes
+  (stated limit × worker count). Move to Redis-backed storage before scaling
+  past one worker.
+- **Security headers** (Flask-Talisman) — Content-Security-Policy,
+  X-Frame-Options, X-Content-Type-Options, and Strict-Transport-Security are
+  set on every response. Verified directly in response headers.
+  **Known trade-off:** the CSP allows `unsafe-inline` for styles only (not
+  scripts), because templates use inline `style=""` attributes throughout.
+  Removing this means refactoring every inline style to a CSS class first —
+  a real task, not done yet. Script sources are strict (`'self'` plus the
+  one CDN used for CSV parsing) with no exceptions.
+- **File upload limits** — a hard 5MB cap on total request size
+  (`MAX_CONTENT_LENGTH`) and a 20,000-row cap on CSV parsing, both tested
+  directly: an oversized request returns a clean 413, an oversized CSV
+  returns a clean 400 with an actionable message, neither crashes the server.
 - **Session cookies are httpOnly** (JavaScript can't read them, blocking a
   common XSS cookie-theft path), **SameSite=Lax** (blocks basic CSRF), and
   **Secure** (HTTPS-only) once not running in debug mode.
 - **SQL injection is structurally prevented** — SQLAlchemy's ORM parameterizes
   every query; the app never builds SQL from string concatenation.
-- **Every API error returns JSON**, even unhandled crashes and unauthorized
-  access — verified directly so the frontend never breaks on an HTML error
+- **Every API error returns JSON**, even unhandled crashes, CSRF failures,
+  oversized uploads, and unauthorized access — all route through one error
+  handler, tested directly so the frontend never breaks on an HTML error
   page instead of a real message.
 - **`SECRET_KEY` is mandatory in production** — the app raises an error and
   refuses to start rather than silently falling back to an insecure default,
   which is a common real-world vulnerability in Flask apps.
+- **Schema migrations are managed with Alembic** (via Flask-Migrate), not
+  `db.create_all()`. A real migration is already generated and tested
+  (`migrations/versions/`) — applying it creates the exact expected tables.
+  Future schema changes go through `flask db migrate` / `flask db upgrade`,
+  which can alter existing tables safely; `db.create_all()` cannot.
+- **Automated test suite** (`tests/`, pytest) — 29 tests covering auth, data
+  isolation, the scoring engine (including exact four-fifths-rule boundary
+  cases), and CSV parsing edge cases. Run with `pytest tests/ -v`. This is
+  what catches a regression before it reaches a real client, instead of
+  relying on manual spot-checks.
+- **Health check endpoint** (`/healthz`) — checks the database is actually
+  reachable, not just that the process is running. Point your uptime monitor
+  at this.
+
+## Running the test suite
+
+```
+pip install -r requirements.txt --break-system-packages
+pytest tests/ -v
+```
+
+Tests run against an isolated in-memory SQLite database — they never touch
+your real `usawa.db` or a production database, and don't require
+`ANTHROPIC_API_KEY` to be set (AI insights calls aren't covered by automated
+tests yet, since that needs either a real API key or a mocked client).
+
+## Managing schema changes
+
+```
+export FLASK_APP=app.py
+flask db migrate -m "describe your change"   # generates a new migration file
+flask db upgrade                              # applies it
+```
+
+Always review the auto-generated migration file before applying it —
+Alembic's autogenerate is good but not perfect, especially for column type
+changes or renames (it may see a rename as "drop one column, add another,"
+losing data — check this manually when it applies).
 
 ## What's still missing before this is a fully mature production system
 
-Being direct, so nothing here is a surprise later:
+Being direct, so nothing here is a surprise later — this is what remains
+after Tier 1 hardening (rate limiting, CSRF, security headers, file upload
+limits, migrations, and automated tests, all covered above):
 
 - **No password reset flow** — if a user forgets their password today, there's
   no "forgot password" email flow yet. Needed before real users onboard
   themselves.
-- **No rate limiting on login/register** — someone could currently attempt
-  many password guesses in a row. Add Flask-Limiter before this is public.
 - **No email verification** — anyone can register with any email address
   without proving they own it.
-- **Schema migrations aren't managed** — `db.create_all()` only creates
-  tables that don't exist yet; it won't alter existing tables if you change a
-  model later. Move to Flask-Migrate (Alembic) before your schema needs to
-  evolve on a live database with real data in it.
 - **No audit log** — for a tool handling sensitive pay/demographic data, a
   log of who viewed/exported what, and when, is standard practice and worth
   adding before enterprise clients ask for it.
+- **No account lockout after repeated failed logins** — rate limiting slows
+  brute-force attempts but doesn't lock an account after N failures.
+- **No structured/JSON logging** — current logs are plain print statements,
+  which gets hard to search once there's real production traffic.
+- **No error monitoring service** (e.g. Sentry) — a crash currently only
+  shows up in server logs; nothing alerts you when it happens.
+- **No dependency vulnerability scanning** — nothing currently checks
+  `requirements.txt` against known CVEs (pip-audit or GitHub Dependabot
+  would close this).
 - **No industry benchmarks yet** — comparing a company's scores to aggregate
   data across your client base isn't wired in yet; needs 10+ real clients'
   worth of data first.
@@ -172,6 +239,8 @@ Being direct, so nothing here is a surprise later:
   location — what Trusaic's engine actually does) is a meaningfully bigger
   statistical undertaking than the level-based comparison this tool currently
   does. Worth scoping as its own project phase.
+- **Gunicorn defaults are untuned** — no explicit worker count or timeout
+  configuration for real concurrent load.
 
 ## Updating the scoring logic
 
