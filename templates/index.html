@@ -18,6 +18,12 @@
     <button class="btn-ghost" id="logoutBtn" style="padding:6px 12px;font-size:12px">Log out</button>
   </nav>
 </div>
+{% if current_user.is_authenticated and not current_user.email_verified %}
+<div class="verify-banner">
+  <span>Verify your email to secure your account.</span>
+  <button class="btn-ghost" id="resendVerificationBtn" style="padding:4px 10px;font-size:12px">Resend verification email</button>
+</div>
+{% endif %}
 <div class="app-shell">
 
   <aside class="app-tabs">

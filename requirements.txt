@@ -10,3 +10,7 @@ Flask-WTF==1.2.2
 Flask-Talisman==1.1.0
 Flask-Migrate==4.0.7
 pytest==8.3.3
+Flask-Mail==0.10.0
+sentry-sdk==2.14.0
+pydantic[email]==2.9.2
+python-json-logger==2.0.7

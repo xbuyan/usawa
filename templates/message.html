@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ title }} — Usawa</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<div class="topnav"><a href="/" class="brand">Usawa</a><nav></nav></div>
+<div class="wrap" style="max-width:420px;margin-top:60px">
+  <div class="panel" style="text-align:center;padding:36px 24px">
+    <p style="font-size:15px;{% if is_error %}color:var(--bad){% else %}color:var(--good){% endif %};margin-bottom:6px">{{ message }}</p>
+    {% if cta_href %}
+      <div class="btn-row" style="justify-content:center;margin-top:18px">
+        <a href="{{ cta_href }}" class="btn-primary" style="text-decoration:none;display:inline-block">{{ cta_label }}</a>
+      </div>
+    {% else %}
+      <div class="btn-row" style="justify-content:center;margin-top:18px">
+        <a href="/login" class="btn-ghost" style="text-decoration:none;display:inline-block">Back to log in</a>
+      </div>
+    {% endif %}
+  </div>
+</div>
+</body>
+</html>

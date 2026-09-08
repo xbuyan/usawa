@@ -5,10 +5,14 @@ Routes:
   GET  /                        -> public landing page
   GET  /app                     -> the tool (requires login)
   GET  /login, /register        -> auth pages
+  GET  /forgot-password, /reset-password -> password reset pages
+  GET  /verify-email            -> email verification landing
   POST /api/auth/register       -> create account
   POST /api/auth/login          -> log in
   POST /api/auth/logout         -> log out
   GET  /api/auth/me             -> current session info
+  POST /api/auth/forgot-password, /api/auth/reset-password
+  POST /api/auth/resend-verification
   POST /api/parse/employee      -> upload employee CSV, returns aggregated metrics
   POST /api/parse/applicant     -> upload applicant CSV, returns aggregated metrics
   POST /api/score               -> run calculate_scorecard() on submitted data
@@ -17,6 +21,7 @@ Routes:
   POST /api/clients             -> save a client report (owned by current user)
   GET  /api/clients/<id>        -> fetch one saved report (must be owner)
   DELETE /api/clients/<id>      -> delete a saved report (must be owner)
+  GET  /healthz                 -> uptime monitoring target
 
 Run locally (SQLite, zero setup):
   pip install -r requirements.txt
@@ -40,22 +45,27 @@ import os
 import csv
 import io
 import json
-import traceback
+import logging
 
+import sentry_sdk
+from sentry_sdk.integrations.flask import FlaskIntegration
 from flask import Flask, request, jsonify, render_template
 from flask_login import LoginManager, login_required, current_user
-from flask_wtf.csrf import CSRFProtect, generate_csrf, CSRFError
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
+from flask_wtf.csrf import CSRFProtect, generate_csrf
 from flask_talisman import Talisman
 from flask_migrate import Migrate
+from pydantic import ValidationError
 from werkzeug.exceptions import HTTPException
 
 from models import db, User, ClientReport
+from extensions import limiter
 from dei_scorecard import calculate_scorecard
 from csv_aggregation import aggregate_employee_rows, aggregate_applicant_rows
 from ai_insights import generate_insights, InsightsGenerationError
 from auth import auth_bp
+from email_utils import init_mail
+from logging_config import configure_logging
+from schemas import ScoreRequest, InsightsRequest, SaveClientRequest, validation_error_response
 
 # Sane upper bound on how many rows we'll process from an uploaded CSV.
 # Defense in depth alongside MAX_CONTENT_LENGTH: a file could be small in
@@ -107,8 +117,25 @@ def create_app(config_overrides=None):
     if config_overrides:
         app.config.update(config_overrides)
 
+    # --- Structured logging ---------------------------------------------
+    logger = configure_logging(app)
+
+    # --- Error monitoring (Sentry) ---------------------------------------
+    # Only activates if SENTRY_DSN is set — silently does nothing otherwise,
+    # so this is safe to leave in place before you have a Sentry project.
+    sentry_dsn = os.environ.get("SENTRY_DSN")
+    if sentry_dsn and not is_testing:
+        sentry_sdk.init(
+            dsn=sentry_dsn,
+            integrations=[FlaskIntegration()],
+            traces_sample_rate=0.1,
+            environment="production" if not is_debug else "development",
+        )
+        logger.info("Sentry error monitoring initialized.")
+
     db.init_app(app)
     migrate.init_app(app, db)
+    init_mail(app)
 
     login_manager = LoginManager()
     login_manager.init_app(app)
@@ -126,10 +153,6 @@ def create_app(config_overrides=None):
         return db.session.get(User, int(user_id))
 
     # --- CSRF protection ---------------------------------------------------
-    # Every state-changing request (POST/PUT/PATCH/DELETE) must include a
-    # valid CSRF token, either as a form field or the X-CSRFToken header
-    # (what our fetch()-based frontend uses). Session-cookie auth alone
-    # (even with SameSite=Lax) doesn't fully prevent CSRF on its own.
     csrf.init_app(app)
     app.jinja_env.globals["csrf_token"] = generate_csrf
     if config_overrides and config_overrides.get("WTF_CSRF_ENABLED") is False:
@@ -142,14 +165,9 @@ def create_app(config_overrides=None):
     # becomes (limit x worker count), not a shared limit. Move to a Redis
     # storage backend (storage_uri="redis://...") before scaling past one
     # worker, or the numbers below won't mean what they say.
-    limiter = Limiter(
-        key_func=get_remote_address,
-        app=app,
-        default_limits=["200 per hour"],
-        storage_uri="memory://",
-        enabled=not is_testing,
-    )
-    app.limiter = limiter
+    limiter.init_app(app)
+    if is_testing:
+        limiter.enabled = False
 
     # --- Security headers -----------------------------------------------
     # unsafe-inline is kept for style-src because the templates use inline
@@ -190,7 +208,9 @@ def create_app(config_overrides=None):
         """
         if isinstance(e, HTTPException):
             return jsonify({"error": e.description}), e.code
-        traceback.print_exc()
+        logger.exception("Unhandled exception.", extra={"path": request.path, "method": request.method})
+        if sentry_dsn:
+            sentry_sdk.capture_exception(e)
         message = str(e) or "An unexpected server error occurred."
         return jsonify({"error": message}), 500
 
@@ -262,7 +282,12 @@ def create_app(config_overrides=None):
     @app.route("/api/score", methods=["POST"])
     @login_required
     def score():
-        company_data = request.get_json(force=True)
+        try:
+            body = ScoreRequest.model_validate(request.get_json(force=True) or {})
+        except ValidationError as e:
+            return jsonify(validation_error_response(e)), 400
+
+        company_data = body.model_dump(exclude_none=True)
         if not company_data:
             return jsonify({"error": "No data submitted."}), 400
         result = calculate_scorecard(company_data)
@@ -272,22 +297,25 @@ def create_app(config_overrides=None):
     @login_required
     @limiter.limit("30 per hour")  # this call costs real money per request
     def insights():
-        body = request.get_json(force=True)
-        scorecard = body.get("scorecard")
-        if not scorecard:
-            return jsonify({"error": "Missing scorecard data."}), 400
+        try:
+            body = InsightsRequest.model_validate(request.get_json(force=True) or {})
+        except ValidationError as e:
+            return jsonify(validation_error_response(e)), 400
 
         try:
             result = generate_insights(
-                scorecard,
-                company_size=body.get("company_size"),
-                industry=body.get("industry"),
-                benchmarks=body.get("benchmarks"),
+                body.scorecard,
+                company_size=body.company_size,
+                industry=body.industry,
+                benchmarks=body.benchmarks,
             )
             return jsonify(result)
         except InsightsGenerationError as e:
             return jsonify({"error": str(e)}), 502
         except Exception as e:
+            logger.exception("AI insights call failed.")
+            if sentry_dsn:
+                sentry_sdk.capture_exception(e)
             return jsonify({"error": f"AI insights failed: {e}"}), 502
 
     # -----------------------------------------------------------------
@@ -316,21 +344,21 @@ def create_app(config_overrides=None):
     @app.route("/api/clients", methods=["POST"])
     @login_required
     def save_client():
-        body = request.get_json(force=True)
-        company_name = body.get("company_name") or "Untitled"
-        form_data = body.get("form", {})
-        scorecard = body.get("scorecard", {})
-        insights_data = body.get("insights")
+        try:
+            body = SaveClientRequest.model_validate(request.get_json(force=True) or {})
+        except ValidationError as e:
+            return jsonify(validation_error_response(e)), 400
 
         report = ClientReport(
             user_id=current_user.id,
-            company_name=company_name,
-            form_json=json.dumps(form_data),
-            scorecard_json=json.dumps(scorecard),
-            insights_json=json.dumps(insights_data) if insights_data else None,
+            company_name=body.company_name,
+            form_json=json.dumps(body.form),
+            scorecard_json=json.dumps(body.scorecard),
+            insights_json=json.dumps(body.insights) if body.insights else None,
         )
         db.session.add(report)
         db.session.commit()
+        logger.info("Client report saved.", extra={"user_id": current_user.id, "report_id": report.id})
         return jsonify({"id": report.id}), 201
 
     @app.route("/api/clients/<int:client_id>", methods=["GET"])
@@ -356,6 +384,7 @@ def create_app(config_overrides=None):
             return jsonify({"error": "Not found."}), 404
         db.session.delete(report)
         db.session.commit()
+        logger.info("Client report deleted.", extra={"user_id": current_user.id, "report_id": client_id})
         return "", 204
 
     # -----------------------------------------------------------------

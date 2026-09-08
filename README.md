@@ -67,6 +67,12 @@ only applies to local development; production uses Postgres (see below).
 | `DATABASE_URL` | Yes | A Postgres connection string, e.g. `postgresql://user:pass@host:5432/dbname`. Without this, the app falls back to a local SQLite file, which most hosts reset on every deploy — fine for testing, not for real client data. |
 | `PORT` | No | Defaults to 5000 |
 | `FLASK_DEBUG` | No | Leave unset (or `0`) in production. Never set to `1` outside local dev — debug mode exposes a lot more than it should if it's ever reachable publicly. |
+| `SENTRY_DSN` | No | From sentry.io, if you want error monitoring. Does nothing if unset — no behavior change, no crash. |
+| `MAIL_SERVER` | No | SMTP host (e.g. `smtp.sendgrid.net`). Without this, password-reset and verification emails are logged instead of sent — fine for testing, not for real users who need to actually receive the email. |
+| `MAIL_PORT` | No | Defaults to 587 (standard SMTP+TLS port) |
+| `MAIL_USERNAME` | No | SMTP auth username |
+| `MAIL_PASSWORD` | No | SMTP auth password |
+| `MAIL_DEFAULT_SENDER` | No | Defaults to `noreply@usawa.co.ke` — set this to an address your SMTP provider is authorized to send from |
 
 ### Render.com — using render.yaml (recommended, fastest path)
 
@@ -180,7 +186,7 @@ tested, not just written — see `tests/` for the automated suite.
   (`migrations/versions/`) — applying it creates the exact expected tables.
   Future schema changes go through `flask db migrate` / `flask db upgrade`,
   which can alter existing tables safely; `db.create_all()` cannot.
-- **Automated test suite** (`tests/`, pytest) — 29 tests covering auth, data
+- **Automated test suite** (`tests/`, pytest) — 40 tests covering auth, data
   isolation, the scoring engine (including exact four-fifths-rule boundary
   cases), and CSV parsing edge cases. Run with `pytest tests/ -v`. This is
   what catches a regression before it reaches a real client, instead of
@@ -214,29 +220,79 @@ Alembic's autogenerate is good but not perfect, especially for column type
 changes or renames (it may see a rename as "drop one column, add another,"
 losing data — check this manually when it applies).
 
+## Tier 2 additions (password reset, verification, monitoring, validation)
+
+Building on Tier 1, all tested before shipping:
+
+- **Password reset** — stateless, signed, expiring tokens (itsdangerous, no
+  extra database table). A token embeds a fingerprint of the *current*
+  password hash, so once a password is actually reset, the fingerprint
+  changes and the same token can't be replayed — tested directly: reusing
+  a token after the password changes is rejected with a clear message.
+  Tokens expire after 1 hour. Rate limited (10/hour on reset, 5/hour on the
+  request-a-link step, since that step triggers an email send).
+- **Email verification** — same stateless-token approach, 3-day expiry.
+  **Deliberately non-blocking**: an unverified user can still log in and use
+  the tool — they see a dismissible-feeling banner with a "resend" button
+  instead of being locked out. This was a judgment call, not an oversight:
+  hard-blocking unverified users is more secure but risks locking out a real
+  user during a live pitch demo if email delivery has any hiccup. Revisit
+  this trade-off once you're onboarding real clients rather than demoing.
+- **Real email sending** (Flask-Mail, standard SMTP — works with Gmail SMTP,
+  SendGrid, Mailgun, Postmark, etc.) — **with an honest limitation: this has
+  NOT been tested against a real SMTP server or a real inbox**, since that
+  needs real credentials this environment doesn't have. If `MAIL_SERVER`
+  isn't set, the app logs the email content instead of sending it (visible
+  directly in the structured logs) — this is what let the reset/verification
+  flows be tested end-to-end without real credentials. Set `MAIL_SERVER`,
+  `MAIL_PORT`, `MAIL_USERNAME`, `MAIL_PASSWORD`, `MAIL_DEFAULT_SENDER` to
+  enable real delivery, then **test it yourself with a real inbox** before
+  trusting it — deliverability depends on your provider's sender reputation
+  and SPF/DKIM setup, which no amount of correct code can guarantee.
+- **Error monitoring (Sentry)** — activates automatically if `SENTRY_DSN` is
+  set; does nothing (no crash, no behavior change) if it's left unset. Wired
+  into the same error handler that already guarantees JSON responses, so a
+  production crash now reaches you instead of only living in server logs
+  nobody's watching.
+- **Structured (JSON) logging** — every log line is now a JSON object with a
+  timestamp, level, and message, verified directly in the output. In local
+  dev (`FLASK_DEBUG=1`) logs stay human-readable instead, since nobody wants
+  to read raw JSON while developing.
+- **Input validation (Pydantic)** — `/api/score`, `/api/insights`,
+  `/api/clients`, and all `/api/auth/*` routes now validate the request body
+  against an explicit schema before any business logic runs. A malformed
+  request gets a clean 400 with the specific field and reason, tested
+  directly (e.g. a negative promotion count is rejected with
+  `"promotion.promotions_a: Input should be greater than or equal to 0"`)
+  instead of either crashing or silently doing the wrong thing with a
+  missing field defaulting to `None`.
+- **Gunicorn worker tuning** — `--workers 2 --worker-class gthread --threads 4
+  --timeout 120`. Reasoning: Render's free tier gives 0.1 CPU/512MB, so
+  worker count stays low; threads (not more processes) handle concurrent
+  requests without multiplying memory use; the 120s timeout accounts for
+  the AI insights call, which can take a while waiting on the Claude API —
+  the previous unconfigured default would have killed slow requests
+  prematurely under real load. Revisit these numbers if you upgrade off the
+  free tier.
+
 ## What's still missing before this is a fully mature production system
 
 Being direct, so nothing here is a surprise later — this is what remains
-after Tier 1 hardening (rate limiting, CSRF, security headers, file upload
-limits, migrations, and automated tests, all covered above):
+after Tier 1 (rate limiting, CSRF, security headers, file upload limits,
+migrations, automated tests) and Tier 2 (password reset, email verification,
+error monitoring, structured logging, input validation, worker tuning),
+all covered above:
 
-- **No password reset flow** — if a user forgets their password today, there's
-  no "forgot password" email flow yet. Needed before real users onboard
-  themselves.
-- **No email verification** — anyone can register with any email address
-  without proving they own it.
 - **No audit log** — for a tool handling sensitive pay/demographic data, a
   log of who viewed/exported what, and when, is standard practice and worth
   adding before enterprise clients ask for it.
 - **No account lockout after repeated failed logins** — rate limiting slows
   brute-force attempts but doesn't lock an account after N failures.
-- **No structured/JSON logging** — current logs are plain print statements,
-  which gets hard to search once there's real production traffic.
-- **No error monitoring service** (e.g. Sentry) — a crash currently only
-  shows up in server logs; nothing alerts you when it happens.
 - **No dependency vulnerability scanning** — nothing currently checks
   `requirements.txt` against known CVEs (pip-audit or GitHub Dependabot
   would close this).
+- **Email deliverability is untested** — see the honest caveat above. Real
+  SMTP credentials and a real test send are needed before relying on this.
 - **No industry benchmarks yet** — comparing a company's scores to aggregate
   data across your client base isn't wired in yet; needs 10+ real clients'
   worth of data first.

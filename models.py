@@ -20,6 +20,7 @@ class User(UserMixin, db.Model):
     email = db.Column(db.String(255), unique=True, nullable=False, index=True)
     password_hash = db.Column(db.String(255), nullable=False)
     organization_name = db.Column(db.String(255), nullable=True)
+    email_verified = db.Column(db.Boolean, nullable=False, default=False)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
     reports = db.relationship("ClientReport", backref="owner", lazy=True, cascade="all, delete-orphan")

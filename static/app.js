@@ -468,6 +468,26 @@ document.addEventListener("DOMContentLoaded", () => {
     window.location.href = "/login";
   });
 
+  const resendBtn = $("resendVerificationBtn");
+  if (resendBtn) {
+    resendBtn.addEventListener("click", async () => {
+      resendBtn.disabled = true;
+      const originalText = resendBtn.textContent;
+      try {
+        const resp = await fetch("/api/auth/resend-verification", {
+          method: "POST",
+          headers: { "X-CSRFToken": getCsrfToken() },
+        });
+        const data = await resp.json();
+        resendBtn.textContent = resp.ok ? "Sent" : (data.error || "Failed");
+      } catch (err) {
+        resendBtn.textContent = "Failed";
+      } finally {
+        setTimeout(() => { resendBtn.textContent = originalText; resendBtn.disabled = false; }, 3000);
+      }
+    });
+  }
+
   document.querySelectorAll(".tab-btn").forEach((btn) => {
     btn.addEventListener("click", () => switchTab(btn.dataset.tab));
   });

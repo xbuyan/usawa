@@ -10,7 +10,7 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt && FLASK_APP=app.py flask db upgrade
-    startCommand: gunicorn app:app
+    startCommand: gunicorn app:app --workers 2 --worker-class gthread --threads 4 --timeout 120 --graceful-timeout 30 --access-logfile - --error-logfile -
     envVars:
       - key: DATABASE_URL
         fromDatabase:
@@ -22,3 +22,19 @@ services:
         sync: false
       - key: PYTHON_VERSION
         value: 3.12.0
+      # Optional — the app runs fine without these (Sentry monitoring and
+      # real email sending are both off by default), but they're listed
+      # here so they're discoverable in the Render dashboard when you're
+      # ready to turn them on. Leave blank to skip.
+      - key: SENTRY_DSN
+        sync: false
+      - key: MAIL_SERVER
+        sync: false
+      - key: MAIL_PORT
+        sync: false
+      - key: MAIL_USERNAME
+        sync: false
+      - key: MAIL_PASSWORD
+        sync: false
+      - key: MAIL_DEFAULT_SENDER
+        sync: false
