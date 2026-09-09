@@ -6,6 +6,8 @@ in-browser prototype, so behavior stays identical between versions.
 
 from typing import Dict, List, Tuple
 
+from csv_columns import remap_rows
+
 LEVEL_ORDER = ["IC", "Manager", "Director", "Exec"]
 STAGE_ORDER = ["applied", "interviewed", "offered", "hired"]
 
@@ -29,7 +31,13 @@ def aggregate_employee_rows(rows: List[Dict]) -> Dict:
     """
     rows: list of dicts with keys employee_id, level, group, salary,
     promotion_eligible, promoted, months_to_promotion (strings, as read from CSV).
+    Column names are matched flexibly (see csv_columns.py) — the exact
+    template names above are canonical, but common real-world spellings
+    ("Employee ID", "Job Level", "Base Salary", etc.) are also accepted.
+    Raises ValueError if a required column can't be found under any known
+    spelling.
     """
+    rows = remap_rows(rows, kind="employee")
     by_level = {level: {"a": [], "b": []} for level in LEVEL_ORDER}
     eligible_a = eligible_b = promoted_a = promoted_b = 0
     ttp_a, ttp_b = [], []
@@ -102,8 +110,12 @@ def aggregate_employee_rows(rows: List[Dict]) -> Dict:
 def aggregate_applicant_rows(rows: List[Dict]) -> Dict:
     """
     rows: list of dicts with keys candidate_id, group, stage_reached.
-    stage_reached is the furthest stage that candidate got to.
+    stage_reached is the furthest stage that candidate got to. Column
+    names are matched flexibly — see csv_columns.py and the note on
+    aggregate_employee_rows above. Raises ValueError if a required column
+    can't be found under any known spelling.
     """
+    rows = remap_rows(rows, kind="applicant")
     counts = {
         "a": {stage: 0 for stage in STAGE_ORDER},
         "b": {stage: 0 for stage in STAGE_ORDER},

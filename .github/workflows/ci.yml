@@ -1,0 +1,73 @@
+name: CI
+
+# Runs on every push and pull request against main. Two jobs:
+#   test       — the full pytest suite, against a real Redis service
+#                (test_rate_limiting.py needs a real Redis instance, the
+#                same way it's tested locally in dev — no mocking).
+#   dependency-audit — pip-audit against requirements.txt, so a newly
+#                disclosed CVE in a pinned dependency is caught
+#                automatically instead of only being found if someone
+#                happens to run pip-audit by hand.
+#
+# Previously this repo had NO CI at all — tests only ran if a developer
+# remembered to run `pytest tests/ -v` locally before pushing. This is
+# what makes "tested" mean "tested on every push," not just "tested once
+# on someone's laptop."
+
+"on":
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run test suite
+        env:
+          SECRET_KEY: ci-test-secret-key
+          ANTHROPIC_API_KEY: sk-test-fake-key-for-ci
+          REDIS_URL: redis://localhost:6379/0
+        run: pytest tests/ -v
+
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      - name: Audit dependencies for known vulnerabilities
+        run: pip-audit -r requirements.txt
+        # No continue-on-error: a newly disclosed CVE should fail the
+        # build and block the merge/deploy, not just leave a warning
+        # someone might not read.

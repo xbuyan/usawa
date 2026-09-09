@@ -26,6 +26,7 @@ from pydantic import ValidationError
 
 from models import db, User
 from extensions import limiter
+import audit_log
 from tokens import (
     generate_reset_token, verify_reset_token,
     generate_verify_email_token, verify_email_token,
@@ -118,10 +119,33 @@ def login():
 
     email = body.email.lower()
     user = User.query.filter_by(email=email).first()
+
+    if user and user.is_locked():
+        logger.warning("Login attempt on locked account.", extra={"email": email})
+        audit_log.record(user.id, "login_locked")
+        return jsonify({
+            "error": "This account is temporarily locked due to repeated failed "
+                     "login attempts. Try again later or reset your password."
+        }), 423
+
     if not user or not user.check_password(body.password):
+        if user:
+            # Only existing accounts accumulate failures — an account that
+            # doesn't exist can't be locked out, so there's nothing to
+            # track for it. This does mean a 423 response reveals the
+            # account exists (a minor enumeration trade-off vs. the 401
+            # every other failure gets); accepted deliberately since
+            # stopping credential-stuffing against a specific account
+            # matters more here than fully hiding its existence.
+            user.register_failed_login()
+            db.session.commit()
+            audit_log.record(user.id, "login_failed")
         return jsonify({"error": "Invalid email or password."}), 401
 
+    user.register_successful_login()
+    db.session.commit()
     login_user(user)
+    audit_log.record(user.id, "login_success")
     return jsonify({"email": user.email})
 
 

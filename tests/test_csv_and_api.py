@@ -78,3 +78,36 @@ def test_employee_csv_upload_rejects_missing_file(client, registered_user):
     client, email, password = registered_user
     resp = client.post("/api/parse/employee", data={}, content_type="multipart/form-data")
     assert resp.status_code == 400
+
+
+def test_employee_csv_upload_accepts_real_world_headers_end_to_end(client, registered_user):
+    # A real customer export won't use the exact template column names.
+    # This confirms the whole upload -> parse -> aggregate path works with
+    # a plausible real export's headers, not just the internal template.
+    client, email, password = registered_user
+    csv_content = (
+        "Employee ID,Job Level,Group,Base Salary,Eligible For Promotion,Was Promoted,Time To Promotion\n"
+        "E001,IC,a,90000,yes,no,\n"
+        "E002,IC,b,95000,yes,yes,12\n"
+    )
+    resp = client.post(
+        "/api/parse/employee",
+        data={"file": (io.BytesIO(csv_content.encode()), "employees.csv")},
+        content_type="multipart/form-data",
+    )
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert "IC" in body["pay_gap_by_level"]
+
+
+def test_employee_csv_upload_missing_required_column_returns_clean_400(client, registered_user):
+    client, email, password = registered_user
+    # No salary column under any recognized spelling.
+    csv_content = "employee_id,level,group\nE001,IC,a\n"
+    resp = client.post(
+        "/api/parse/employee",
+        data={"file": (io.BytesIO(csv_content.encode()), "employees.csv")},
+        content_type="multipart/form-data",
+    )
+    assert resp.status_code == 400
+    assert "salary" in resp.get_json()["error"].lower()

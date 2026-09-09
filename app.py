@@ -50,6 +50,7 @@ import logging
 import sentry_sdk
 from sentry_sdk.integrations.flask import FlaskIntegration
 from flask import Flask, request, jsonify, render_template
+from werkzeug.middleware.proxy_fix import ProxyFix
 from flask_login import LoginManager, login_required, current_user
 from flask_wtf.csrf import CSRFProtect, generate_csrf
 from flask_talisman import Talisman
@@ -57,8 +58,9 @@ from flask_migrate import Migrate
 from pydantic import ValidationError
 from werkzeug.exceptions import HTTPException
 
-from models import db, User, ClientReport
+from models import db, User, ClientReport, AuditLog
 from extensions import limiter
+import audit_log
 from dei_scorecard import calculate_scorecard
 from csv_aggregation import aggregate_employee_rows, aggregate_applicant_rows
 from ai_insights import generate_insights, InsightsGenerationError
@@ -80,6 +82,19 @@ csrf = CSRFProtect()
 
 def create_app(config_overrides=None):
     app = Flask(__name__)
+
+    # Render (and most PaaS hosts) terminates TLS at a reverse proxy and
+    # forwards requests to the app over plain HTTP internally. Without this,
+    # request.remote_addr returns the PROXY's internal address for every
+    # request, not the real client's — which silently breaks both rate
+    # limiting (Flask-Limiter's get_remote_address, see extensions.py, would
+    # key every user under one shared bucket) and the audit log's IP field
+    # (see audit_log.py). x_for=1 trusts exactly the immediate hop's
+    # X-Forwarded-For header — appropriate for a single reverse proxy in
+    # front of the app (Render's setup), NOT appropriate if there were an
+    # untrusted proxy the app is directly exposed to, which would let a
+    # client spoof its own IP via that header.
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
     # --- Configuration ---------------------------------------------------
     secret_key = os.environ.get("SECRET_KEY")
@@ -159,12 +174,19 @@ def create_app(config_overrides=None):
         app.config["WTF_CSRF_ENABLED"] = False
 
     # --- Rate limiting -------------------------------------------------
-    # NOTE: default in-memory storage only works correctly with a single
-    # process. Running more than one gunicorn worker in production means
-    # each worker tracks its own separate counts — the effective limit
-    # becomes (limit x worker count), not a shared limit. Move to a Redis
-    # storage backend (storage_uri="redis://...") before scaling past one
-    # worker, or the numbers below won't mean what they say.
+    # Storage backend is chosen in extensions.py based on REDIS_URL.
+    # Without it, limits fall back to in-memory storage, which only gives
+    # correct shared limits with a single process — gunicorn currently
+    # runs 2 workers (see Procfile/render.yaml), so this matters in
+    # practice, not just in theory. Fail loudly rather than silently
+    # serving inconsistent rate limits in production.
+    if not is_testing and not is_debug and not os.environ.get("REDIS_URL"):
+        logger.warning(
+            "REDIS_URL is not set. Falling back to in-memory rate-limit "
+            "storage, which does NOT share counts across gunicorn workers "
+            "(this deployment runs multiple workers). Rate limits will be "
+            "inconsistently enforced until REDIS_URL is set."
+        )
     limiter.init_app(app)
     if is_testing:
         limiter.enabled = False
@@ -257,7 +279,11 @@ def create_app(config_overrides=None):
             return jsonify({"error": str(e)}), 400
         if not rows:
             return jsonify({"error": "The CSV appears to be empty."}), 400
-        result = aggregate_employee_rows(rows)
+        try:
+            result = aggregate_employee_rows(rows)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        audit_log.record(current_user.id, "csv_upload_employee", detail=f"{len(rows)} rows")
         return jsonify(result)
 
     @app.route("/api/parse/applicant", methods=["POST"])
@@ -272,7 +298,11 @@ def create_app(config_overrides=None):
             return jsonify({"error": str(e)}), 400
         if not rows:
             return jsonify({"error": "The CSV appears to be empty."}), 400
-        result = aggregate_applicant_rows(rows)
+        try:
+            result = aggregate_applicant_rows(rows)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        audit_log.record(current_user.id, "csv_upload_applicant", detail=f"{len(rows)} rows")
         return jsonify(result)
 
     # -----------------------------------------------------------------
@@ -309,6 +339,7 @@ def create_app(config_overrides=None):
                 industry=body.industry,
                 benchmarks=body.benchmarks,
             )
+            audit_log.record(current_user.id, "insights_generated", resource_type="scorecard")
             return jsonify(result)
         except InsightsGenerationError as e:
             return jsonify({"error": str(e)}), 502
@@ -359,6 +390,10 @@ def create_app(config_overrides=None):
         db.session.add(report)
         db.session.commit()
         logger.info("Client report saved.", extra={"user_id": current_user.id, "report_id": report.id})
+        audit_log.record(
+            current_user.id, "client_report_created",
+            resource_type="client_report", resource_id=report.id, detail=report.company_name,
+        )
         return jsonify({"id": report.id}), 201
 
     @app.route("/api/clients/<int:client_id>", methods=["GET"])
@@ -367,6 +402,10 @@ def create_app(config_overrides=None):
         report = ClientReport.query.filter_by(id=client_id, user_id=current_user.id).first()
         if not report:
             return jsonify({"error": "Not found."}), 404
+        audit_log.record(
+            current_user.id, "client_report_viewed",
+            resource_type="client_report", resource_id=report.id, detail=report.company_name,
+        )
         return jsonify({
             "id": report.id,
             "company_name": report.company_name,
@@ -382,10 +421,44 @@ def create_app(config_overrides=None):
         report = ClientReport.query.filter_by(id=client_id, user_id=current_user.id).first()
         if not report:
             return jsonify({"error": "Not found."}), 404
+        company_name = report.company_name
         db.session.delete(report)
         db.session.commit()
         logger.info("Client report deleted.", extra={"user_id": current_user.id, "report_id": client_id})
+        audit_log.record(
+            current_user.id, "client_report_deleted",
+            resource_type="client_report", resource_id=client_id, detail=company_name,
+        )
         return "", 204
+
+    # -----------------------------------------------------------------
+    # Audit log — a user's own access/change history
+    # -----------------------------------------------------------------
+
+    @app.route("/api/audit-log", methods=["GET"])
+    @login_required
+    def audit_log_view():
+        # Scoped to current_user, same pattern as /api/clients — a user
+        # sees their own history, not anyone else's. Capped at the 200
+        # most recent entries; this is meant for "what happened recently
+        # on my account," not full historical export/analysis.
+        entries = (
+            AuditLog.query.filter_by(user_id=current_user.id)
+            .order_by(AuditLog.created_at.desc())
+            .limit(200)
+            .all()
+        )
+        return jsonify([
+            {
+                "action": e.action,
+                "resource_type": e.resource_type,
+                "resource_id": e.resource_id,
+                "detail": e.detail,
+                "ip_address": e.ip_address,
+                "created_at": e.created_at.isoformat(),
+            }
+            for e in entries
+        ])
 
     # -----------------------------------------------------------------
     # Health check — for uptime monitoring
