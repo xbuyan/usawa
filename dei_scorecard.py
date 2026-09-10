@@ -372,6 +372,14 @@ def calculate_scorecard(company_data: Dict, weights: Optional[Dict[str, float]] 
         scores["job_language"] = result["score"]
         details["job_language"] = result
 
+    if "regression_adjusted_pay_equity" in company_data:
+        # Supplementary to pay_equity above — deliberately does NOT affect
+        # scores/overall_score. Two honestly-labeled numbers (simple
+        # level-based gap, and regression-adjusted gap when enough data is
+        # present) rather than one number that quietly picks a
+        # methodology. See pay_equity_regression.py for why.
+        details["regression_adjusted_pay_equity"] = company_data["regression_adjusted_pay_equity"]
+
     # Redistribute weights proportionally across whatever sections are present
     active_weight_total = sum(weights[k] for k in scores if k in weights)
     overall_score = None

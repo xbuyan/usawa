@@ -25,10 +25,16 @@ from typing import Dict, List, Optional, Set, Tuple
 
 
 def _normalize_header(h: str) -> str:
-    """'Employee ID', 'employee-id', ' Employee_ID ' all become 'employee_id'."""
+    """'Employee ID', 'employee-id', ' Employee_ID ', 'Tenure (Years)' all
+    become 'employee_id' / 'tenure_years' — any run of non-alphanumeric
+    characters (spaces, hyphens, parentheses, slashes, etc.) becomes a
+    single underscore, not just whitespace and hyphens. A real customer
+    header like "Tenure (Years)" was the case that first caught this gap
+    (caught by a test, not by inspection) — the original version only
+    handled spaces/hyphens and left the parentheses in, so it silently
+    failed to match anything."""
     h = (h or "").strip().lower()
-    h = re.sub(r"[\s\-]+", "_", h)
-    h = re.sub(r"_+", "_", h)
+    h = re.sub(r"[^a-z0-9]+", "_", h)
     return h.strip("_")
 
 
@@ -42,6 +48,13 @@ EMPLOYEE_COLUMN_SYNONYMS: Dict[str, Set[str]] = {
     "promotion_eligible": {"promotion_eligible", "eligible_for_promotion", "promo_eligible", "promotion_eligibility"},
     "promoted": {"promoted", "was_promoted", "got_promoted", "promotion_status"},
     "months_to_promotion": {"months_to_promotion", "time_to_promotion", "ttp_months", "months_since_eligible"},
+    # Optional — only used for regression-adjusted pay equity (see
+    # pay_equity_regression.py). Not in EMPLOYEE_REQUIRED: their absence
+    # doesn't block the simple level-based comparison, it just means the
+    # regression-adjusted analysis can't run (and says so explicitly).
+    "tenure_months": {"tenure_months", "months_tenure", "tenure", "time_in_role_months", "time_in_company_months"},
+    "tenure_years": {"tenure_years", "years_tenure", "years_at_company", "tenure_yrs"},
+    "performance_rating": {"performance_rating", "performance_score", "perf_rating", "performance", "rating"},
 }
 
 APPLICANT_COLUMN_SYNONYMS: Dict[str, Set[str]] = {

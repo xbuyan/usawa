@@ -216,13 +216,14 @@ tested, not just written — see `tests/` for the automated suite.
   (`migrations/versions/`) — applying it creates the exact expected tables.
   Future schema changes go through `flask db migrate` / `flask db upgrade`,
   which can alter existing tables safely; `db.create_all()` cannot.
-- **Automated test suite** (`tests/`, pytest) — 62 tests covering auth,
+- **Automated test suite** (`tests/`, pytest) — 72 tests covering auth,
   account lockout, audit logging, data isolation, exact four-fifths-rule boundary cases,
-  CSV parsing edge cases and flexible column mapping, rate limiting
-  (against a real Redis server), password reset, email verification, and
-  Pydantic validation. Run with `pytest tests/ -v`. This is what catches a
-  regression before it reaches a real client, instead of relying on manual
-  spot-checks.
+  CSV parsing edge cases and flexible column mapping, regression-adjusted
+  pay equity (verified against synthetic data with a known true answer),
+  rate limiting (against a real Redis server), password reset, email
+  verification, and Pydantic validation. Run with `pytest tests/ -v`. This
+  is what catches a regression before it reaches a real client, instead of
+  relying on manual spot-checks.
 - **Health check endpoint** (`/healthz`) — checks the database is actually
   reachable, not just that the process is running. Point your uptime monitor
   at this.
@@ -312,18 +313,28 @@ Building on Tier 1, all tested before shipping:
 Being direct, so nothing here is a surprise later — this is what remains
 after Tier 1, Tier 2, and the September 2026 hardening passes (Redis rate
 limiting, account lockout, flexible CSV column mapping, dependency
-scanning + CI, and an audit log with real client-IP resolution), all
-covered above:
+scanning + CI, an audit log with real client-IP resolution, and
+regression-adjusted pay equity), all covered above:
 
 - **Email deliverability is untested** — see the honest caveat above. Real
   SMTP credentials and a real test send are needed before relying on this.
 - **No industry benchmarks yet** — comparing a company's scores to aggregate
   data across your client base isn't wired in yet; needs 10+ real clients'
   worth of data first.
-- **Regression-based pay equity** (controlling for tenure, performance,
-  location — what Trusaic's engine actually does) is a meaningfully bigger
-  statistical undertaking than the level-based comparison this tool currently
-  does. Worth scoping as its own project phase.
+- **Regression-adjusted pay equity is not wired into the frontend UI yet**
+  — the API computes and returns it, but nothing in `static/app.js`
+  displays it. The backend piece is done and tested; the UI piece isn't.
+- **Regression-adjusted pay equity controls for level, tenure, and
+  performance — not "role scope"** in any finer sense (team size, budget,
+  scope of responsibility). Reducing that to a clean column needs a
+  customer-specific job architecture, which is out of scope for now. Real
+  remaining gap versus Trusaic's actual engine, just narrower than before.
+- **Regression-adjusted pay equity has not been validated against a real,
+  messy customer dataset** — verified against synthetic data with a known
+  true answer (see `tests/test_pay_equity_regression.py`), which proves the
+  math is implemented correctly, but real HR data (missing values, outliers,
+  small subgroups) will exercise the guard rails (sample-size floors,
+  collinearity detection) in ways synthetic data can't fully anticipate.
 - **CI has not been observed running on a real push yet** — the GitHub
   Actions workflow (`.github/workflows/ci.yml`) was written and every
   command in it was verified locally in a sandbox (real pytest run against
@@ -354,19 +365,46 @@ invented. The AI-generated recommendations will cite this explicitly when a
 metric fails it (e.g. "this hiring stage falls below the four-fifths
 threshold").
 
-**Pay equity and representation pipeline** do NOT have an equivalent legal
-test. Pay equity thresholds here (5% unexplained gap as a caution point, 15%+
-as severe) reflect common practice among pay equity consultancies, not law —
-and this tool's pay gap calculation is simplified (grouped by level only,
-not controlling for tenure, performance, or role scope the way a real pay
-equity audit would). Representation pipeline ("leaky pipeline") drop-off has
+**Pay equity** has two versions now, both surfaced, clearly labeled, side by
+side — never one quietly standing in for the other:
+
+- **Level-based gap** (`pay_gap_by_level`, always computed): average pay
+  compared within the same job level only. Thresholds (5% as a caution
+  point, 15%+ as severe) reflect common pay-equity-consultancy practice, not
+  law.
+- **Regression-adjusted gap** (`regression_adjusted_pay_equity`, computed
+  whenever the upload includes tenure and performance rating — both
+  optional columns): an OLS regression of salary on level, tenure, and
+  performance rating, plus a group indicator. The coefficient on the group
+  indicator is the pay difference that survives controlling for those
+  legitimate factors — much closer to what a real pay equity audit (and
+  Trusaic's actual engine) reports, versus a raw level-grouped average that
+  might just reflect one group having more tenure or higher ratings.
+  Includes a p-value and a `statistically_significant` flag (p < 0.05);
+  below at least 30 usable rows (and 5+ per group), it reports
+  `usable: false` with a specific reason instead of guessing — see
+  `pay_equity_regression.py` for the exact guards (sample size, group
+  balance, collinearity, singular-matrix protection).
+  **Honest scope limit:** this controls for level, tenure, and performance
+  — NOT "role scope" in any finer-grained sense (team size, budget,
+  scope of responsibility), since there's no clean way to reduce that to a
+  column without a customer-specific job architecture. That's still a real
+  gap versus Trusaic's actual engine, just a smaller one than before.
+  **Not yet wired into the frontend UI** — the number is computed and
+  returned by the API (`/api/parse/employee`, `/api/score`), but nothing
+  in `static/app.js` displays it yet. Tracked here explicitly rather than
+  silently left out of both the code and the "what's missing" list.
+
+Representation pipeline (\"leaky pipeline\") drop-off has
 no regulatory standard at all — it's a descriptive pattern, useful for
 spotting where representation erodes, but should never be presented as a
 compliance finding.
 
 **Before you pitch this as a product**, be direct with prospects about this
-split: the hiring/promotion numbers can be defended with a citation, the pay
-and representation numbers are directional signals that would need a real
-audit (ideally with an employment attorney or certified pay equity analyst)
-before anyone acts on them in a way that has legal consequences.
+split: the hiring/promotion numbers can be defended with a citation, the
+regression-adjusted pay number is a real statistical control (when there's
+enough data for it to run) but still not a legal finding, and the
+representation numbers are directional signals — all of it would need a
+real audit (ideally with an employment attorney or certified pay equity
+analyst) before anyone acts on it in a way that has legal consequences.
 

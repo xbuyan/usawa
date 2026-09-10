@@ -2,7 +2,8 @@
 
 **Last updated:** after the September 2026 hardening pass (Redis rate
 limiting, account lockout, flexible CSV column mapping, dependency
-scanning + CI).
+scanning + CI, an audit log with real client-IP resolution, and
+regression-adjusted pay equity).
 
 **Read this file first in any new conversation about this project** — it's
 the source of truth for what's done, what's not, and the non-negotiable
@@ -190,28 +191,28 @@ and the AI call's latency.
 
 ---
 
-## Tier 3 — NOT STARTED (product maturity, planned)
+## Tier 3 — mostly not started (product maturity, planned)
 
 This is the next phase whenever the founder is ready. In rough priority
 order based on what's been discussed:
 
-1. **Regression-based pay equity** — controlling for tenure, performance,
-   role scope, not just level. This is what Trusaic's actual engine does;
-   the current level-based comparison is a meaningfully simpler
-   statistical approach. Biggest single gap versus being a "real" Trusaic
-   competitor.
-2. **HCM integrations** — pulling data automatically instead of CSV
+1. **HCM integrations** — pulling data automatically instead of CSV
    upload. Trusaic's biggest moat; hardest to replicate quickly.
-3. **Industry benchmarks** — comparing a company's scores to aggregate
+2. **Industry benchmarks** — comparing a company's scores to aggregate
    data across the client base. Needs 10+ real clients' data first before
    this is meaningful.
-4. **Ongoing/ continuous monitoring** rather than one-off audits.
-5. **Sentiment/culture surveys, board-ready reporting exports,
+3. **Ongoing/ continuous monitoring** rather than one-off audits.
+4. **Sentiment/culture surveys, board-ready reporting exports,
    dedicated-advisor workflow** — later-stage, mentioned in the original
    long-term roadmap.
 
 (Flexible CSV column mapping was originally listed here as item 3 — moved
-to "done" below, September 2026.)
+to "done" below, September 2026. Regression-based pay equity was
+originally item 1 — moved to "done" below, September 2026, with an
+honest scope note: it controls for level/tenure/performance, not the
+finer-grained "role scope" the original roadmap mentioned — see the
+regression-adjusted pay equity write-up below and README's methodology
+section for the exact limit.)
 
 ---
 
@@ -288,10 +289,46 @@ work — per this project's own honesty standard.
    resolved IP matches the forwarded value rather than a loopback default
    — this specifically would have caught a regression, not just proven
    the code runs.
+6. **Regression-adjusted pay equity** (`pay_equity_regression.py`) — the
+   Tier 3 roadmap's #1 item, done ahead of the rest of Tier 3. OLS
+   regression of salary on level, tenure, and performance rating, plus a
+   group indicator; the group coefficient is the pay difference that
+   survives controlling for those factors, with a real p-value and
+   significance flag, not just a bare number. Purely additive: the
+   existing level-based `pay_gap_by_level` is untouched and still always
+   computed, this is a supplementary `regression_adjusted_pay_equity`
+   section that appears when tenure and performance data (both optional
+   CSV columns) are present and sufficient — confirmed with a test that
+   the score endpoint's `overall_score` and `sub_scores` are byte-for-byte
+   identical whether or not this section is included.
+   **Verified against synthetic data with a known true answer** (not just
+   "doesn't crash"): salary generated from an exact formula with a known
+   $3,000 group effect, small noise, and OLS correctly recovers it
+   (within ~$300, R² > 0.98, correctly flagged significant); a second
+   synthetic run with the group effect set to exactly zero correctly
+   reports NOT significant. Explicit guards for the ways real data breaks
+   naive regressions — small sample size (<30 usable rows), imbalanced
+   groups (<5 in either group), and perfect collinearity between level
+   and group (e.g. one group entirely concentrated at one level) — each
+   returns `usable: false` with a specific human-readable reason rather
+   than a silently wrong or NaN result. Caught and fixed a real bug in
+   the process: the flexible-CSV-mapping header normalizer (from item 3
+   above) didn't strip parentheses, so a real-world header like
+   "Tenure (Years)" silently failed to match anything — found via a test
+   using that exact header, fixed by normalizing on any
+   non-alphanumeric run instead of just whitespace/hyphens, which also
+   made the earlier CSV-mapping feature more robust as a side effect.
+   **Honest scope limits, stated in README's methodology section, not
+   just here:** controls for level/tenure/performance, not finer-grained
+   "role scope"; not yet wired into the frontend UI (API-only so far);
+   not yet validated against real, messy customer data (only synthetic
+   data with known answers, which proves the math but not real-world
+   data quirks).
 
-**Test count: 40 → 62** (all passing). New test files:
+**Test count: 40 → 72** (all passing). New test files:
 `test_rate_limiting.py`, `test_account_lockout.py`, `test_csv_columns.py`,
-`test_audit_log.py`, plus additions to `test_csv_and_api.py`.
+`test_audit_log.py`, `test_pay_equity_regression.py`, plus additions to
+`test_csv_and_api.py`.
 
 ---
 
@@ -301,7 +338,9 @@ Current as of the September 2026 hardening pass:
 
 - Email deliverability untested (see Tier 2 notes above)
 - No industry benchmarks yet
-- Regression-based pay equity not implemented (see Tier 3)
+- Regression-adjusted pay equity is API-only — not yet wired into the
+  frontend UI, and not yet validated against real (non-synthetic) customer
+  data (see hardening-pass note above)
 - CI workflow written and locally verified, but not yet confirmed running
   inside GitHub Actions on a real push (see hardening-pass note above)
 
@@ -338,7 +377,7 @@ python3 app.py
 # open http://localhost:5000
 ```
 
-Run the test suite: `pytest tests/ -v` (should show 62 passed)
+Run the test suite: `pytest tests/ -v` (should show 72 passed)
 
 Note: `test_rate_limiting.py` requires a real Redis server reachable at
 `REDIS_URL` (defaults to `redis://localhost:6379/0`) — install Redis

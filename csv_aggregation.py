@@ -31,6 +31,9 @@ def aggregate_employee_rows(rows: List[Dict]) -> Dict:
     """
     rows: list of dicts with keys employee_id, level, group, salary,
     promotion_eligible, promoted, months_to_promotion (strings, as read from CSV).
+    Optional: tenure_months (or tenure_years) and performance_rating — used
+    only for the supplementary regression-adjusted pay gap (see
+    pay_equity_regression.py); their absence doesn't affect anything else.
     Column names are matched flexibly (see csv_columns.py) — the exact
     template names above are canonical, but common real-world spellings
     ("Employee ID", "Job Level", "Base Salary", etc.) are also accepted.
@@ -42,6 +45,7 @@ def aggregate_employee_rows(rows: List[Dict]) -> Dict:
     eligible_a = eligible_b = promoted_a = promoted_b = 0
     ttp_a, ttp_b = [], []
     skipped = []
+    regression_input_rows = []
 
     for i, row in enumerate(rows):
         level = _normalize_level(row.get("level"))
@@ -56,6 +60,32 @@ def aggregate_employee_rows(rows: List[Dict]) -> Dict:
             continue
 
         by_level[level][group].append(salary)
+
+        # Optional fields for regression — tenure may arrive as months or
+        # years (see csv_columns.py); years is converted here so the
+        # regression module only ever deals in months.
+        tenure_months = row.get("tenure_months")
+        if tenure_months in (None, ""):
+            tenure_years = row.get("tenure_years")
+            try:
+                tenure_months = float(tenure_years) * 12
+            except (TypeError, ValueError):
+                tenure_months = None
+        else:
+            try:
+                tenure_months = float(tenure_months)
+            except (TypeError, ValueError):
+                tenure_months = None
+
+        try:
+            performance_rating = float(row.get("performance_rating"))
+        except (TypeError, ValueError):
+            performance_rating = None
+
+        regression_input_rows.append({
+            "level": level, "group": group, "salary": salary,
+            "tenure_months": tenure_months, "performance_rating": performance_rating,
+        })
 
         eligible = (row.get("promotion_eligible") or "").strip().lower() == "yes"
         promoted = (row.get("promoted") or "").strip().lower() == "yes"
@@ -89,6 +119,13 @@ def aggregate_employee_rows(rows: List[Dict]) -> Dict:
         if total > 0:
             rep_by_level[level] = (len(a_vals) / total) * 100
 
+    # Regression-adjusted pay gap — supplementary to pay_gap_by_level
+    # above, never replaces it. Imported here (not at module level) to
+    # avoid a circular import, since pay_equity_regression imports
+    # LEVEL_ORDER from this module.
+    from pay_equity_regression import compute_regression_adjusted_pay_gap
+    regression_result = compute_regression_adjusted_pay_gap(regression_input_rows)
+
     return {
         "pay_gap_by_level": pay_gap_by_level,
         "representation_by_level": rep_by_level,
@@ -102,6 +139,7 @@ def aggregate_employee_rows(rows: List[Dict]) -> Dict:
                 "group_b": _average(ttp_b),
             },
         },
+        "regression_adjusted_pay_equity": regression_result,
         "skipped": skipped,
         "total_rows": len(rows),
     }

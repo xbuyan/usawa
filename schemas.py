@@ -63,6 +63,11 @@ class ScoreRequest(BaseModel):
     hiring_funnel: Optional[HiringFunnelData] = None
     representation_by_level: Optional[Dict[str, float]] = None
     job_postings: Optional[List[str]] = None
+    # Supplementary to pay_gap_by_level, never replaces it — see
+    # pay_equity_regression.py. Passed through as an opaque dict (it's
+    # produced entirely server-side by aggregate_employee_rows and simply
+    # round-trips through the frontend), so no need to model its shape here.
+    regression_adjusted_pay_equity: Optional[Dict] = None
 
 
 class InsightsRequest(BaseModel):
