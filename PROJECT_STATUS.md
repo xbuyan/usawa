@@ -3,7 +3,9 @@
 **Last updated:** after the September 2026 hardening pass (Redis rate
 limiting, account lockout, flexible CSV column mapping, dependency
 scanning + CI, an audit log with real client-IP resolution, and
-regression-adjusted pay equity).
+regression-adjusted pay equity) — and after the first real production
+deploy attempt caught and fixed a genuine migration bug (see "Production
+incident" section below).
 
 **Read this file first in any new conversation about this project** — it's
 the source of truth for what's done, what's not, and the non-negotiable
@@ -216,6 +218,76 @@ section for the exact limit.)
 
 ---
 
+## Production incident: the email_verified migration failed on first real deploy (found and fixed same day)
+
+**What happened:** the hardening pass below was pushed to `main` on
+September 10, 2026. Auto-deploy did not fire on push (separate,
+still-open issue — see below); when a manual deploy was triggered, the
+build failed with:
+
+```
+sqlalchemy.exc.IntegrityError: (psycopg2.errors.NotNullViolation)
+column "email_verified" of relation "users" contains null values
+[SQL: ALTER TABLE users ADD COLUMN email_verified BOOLEAN NOT NULL]
+```
+
+**Root cause:** the `fb73997782fe_add_email_verified_to_users.py`
+migration — part of Tier 2, written before this September hardening pass
+and never re-audited — added a `NOT NULL` boolean column with no
+`server_default`. This is the *exact same bug class* already found and
+fixed in this pass's own `db74a3830402` (account lockout) migration
+during local testing — but that audit only covered migrations written
+during this pass, not older ones already sitting in the repo. This one
+had never actually been deployed before (see below), so nothing had
+exercised it against real data until this exact moment.
+
+**Why it wasn't caught earlier:** turns out none of Tier 2 — nor any of
+this hardening pass — had ever actually reached production before this
+deploy. The Render deploy history showed only 3 deploys total, all from
+September 7 (before Tier 2 existed). So this migration had only ever run
+against fresh/empty databases (local dev, the test suite's fixtures) —
+which never exercises the "existing row" failure mode. Production's
+`users` table had real signups in it from that September 7 deploy, and
+this was the first time the migration chain ever met that real data.
+
+**Impact:** none to end users. Postgres DDL is atomic — the failed
+`ALTER TABLE` did not partially apply, `alembic_version` stayed pointed
+at the last successful revision, and Render kept the previous (September
+7) deploy running throughout. The build failed; the live site did not go
+down.
+
+**Fix, verified for real, not just locally:**
+1. Added `server_default=sa.false()` to the migration (same pattern as
+   `db74a3830402`'s fix).
+2. **Installed a real Postgres server and reproduced the exact
+   production failure against it** — same error message, same failing
+   SQL — before touching the fix, to confirm the actual root cause rather
+   than assume it from the traceback alone.
+3. Applied the fix against that same real Postgres instance, with a real
+   pre-existing row in place, and confirmed it succeeds and backfills
+   correctly.
+4. Ran the *entire* remaining migration chain (lockout, audit_logs) to
+   head against that same real Postgres database with the pre-existing
+   row still there, confirming the rest of the chain — already tested
+   against SQLite — also holds up against the actual database engine
+   production uses.
+5. Added `tests/test_migrations.py` — three tests that specifically
+   insert a real row before running each NOT-NULL-adding migration
+   (and the full chain end-to-end). Verified these tests actually catch
+   the bug: temporarily reverted the fix, confirmed the relevant test
+   failed with the identical error, then restored the fix and confirmed
+   it passed again.
+
+**Still open, found while debugging this:** auto-deploy-on-push
+(Render's "On Commit" setting) did not trigger for this push, for
+reasons not yet diagnosed — the founder had to trigger a manual deploy to
+even discover this migration bug. Render's Build & Deploy settings
+looked correctly configured (right repo, right branch, Auto-Deploy "On
+Commit") when checked, so this needs further investigation before
+relying on auto-deploy again. Tracked in "what's still missing" below.
+
+---
+
 ## September 2026 hardening pass — DONE, tested (fixed a live production bug)
 
 Prompted by re-examining Tier 1's own stated limitation on rate limiting.
@@ -325,10 +397,10 @@ work — per this project's own honesty standard.
    data with known answers, which proves the math but not real-world
    data quirks).
 
-**Test count: 40 → 72** (all passing). New test files:
+**Test count: 40 → 75** (all passing). New test files:
 `test_rate_limiting.py`, `test_account_lockout.py`, `test_csv_columns.py`,
-`test_audit_log.py`, `test_pay_equity_regression.py`, plus additions to
-`test_csv_and_api.py`.
+`test_audit_log.py`, `test_pay_equity_regression.py`,
+`test_migrations.py`, plus additions to `test_csv_and_api.py`.
 
 ---
 
@@ -377,7 +449,7 @@ python3 app.py
 # open http://localhost:5000
 ```
 
-Run the test suite: `pytest tests/ -v` (should show 72 passed)
+Run the test suite: `pytest tests/ -v` (should show 75 passed)
 
 Note: `test_rate_limiting.py` requires a real Redis server reachable at
 `REDIS_URL` (defaults to `redis://localhost:6379/0`) — install Redis

@@ -216,12 +216,14 @@ tested, not just written — see `tests/` for the automated suite.
   (`migrations/versions/`) — applying it creates the exact expected tables.
   Future schema changes go through `flask db migrate` / `flask db upgrade`,
   which can alter existing tables safely; `db.create_all()` cannot.
-- **Automated test suite** (`tests/`, pytest) — 72 tests covering auth,
+- **Automated test suite** (`tests/`, pytest) — 75 tests covering auth,
   account lockout, audit logging, data isolation, exact four-fifths-rule boundary cases,
   CSV parsing edge cases and flexible column mapping, regression-adjusted
   pay equity (verified against synthetic data with a known true answer),
-  rate limiting (against a real Redis server), password reset, email
-  verification, and Pydantic validation. Run with `pytest tests/ -v`. This
+  migrations against tables with pre-existing rows (added after a real
+  production migration failure — see PROJECT_STATUS.md), rate limiting
+  (against a real Redis server), password reset, email verification, and
+  Pydantic validation. Run with `pytest tests/ -v`. This
   is what catches a regression before it reaches a real client, instead of
   relying on manual spot-checks.
 - **Health check endpoint** (`/healthz`) — checks the database is actually
@@ -344,6 +346,13 @@ regression-adjusted pay equity), all covered above:
   learned once, the hard way (see Tier 1's migration incident), that
   "works locally" and "works in the real target environment" are
   genuinely different tests.
+- **Render's Auto-Deploy did not trigger on the September 10, 2026 push**
+  — Build & Deploy settings looked correctly configured (right repo, right
+  branch, Auto-Deploy set to "On Commit") when checked, but no deploy
+  appeared until a manual deploy was triggered. Not yet diagnosed — could
+  be a GitHub webhook delivery issue, a delay, or something else. Worth
+  confirming on the *next* push whether it self-resolved before assuming
+  auto-deploy is reliable.
 
 ## Updating the scoring logic
 
