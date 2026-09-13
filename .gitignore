@@ -7,3 +7,7 @@ venv/
 *.log
 .DS_Store
 .pytest_cache/
+
+# Redis persistence dump — a local runtime artifact, never something that
+# should be in version control (found during the September 2026 full audit)
+dump.rdb
