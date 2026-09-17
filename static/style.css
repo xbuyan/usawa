@@ -161,6 +161,19 @@ button { font-family: inherit; font-size: 13.5px; font-weight: 600; border-radiu
 .score-hero .num { font-family: 'Fraunces', Georgia, serif; font-size: 56px; font-weight: 600; line-height: 1; }
 .score-hero .label { font-size: 13px; color: var(--ink-soft); }
 
+/* Regression-adjusted pay equity panel — deliberately smaller/quieter
+   than .score-hero above: this is supplementary detail on the Pay
+   equity sub-score, not a second headline metric, and it doesn't feed
+   into overall_score (see dei_scorecard.py). */
+.regression-headline { display: flex; align-items: baseline; gap: 12px; margin-bottom: 10px; }
+.regression-headline .num { font-family: 'Fraunces', Georgia, serif; font-size: 32px; font-weight: 600; line-height: 1; }
+.regression-headline .label { font-size: 13px; color: var(--ink-soft); max-width: 42ch; }
+.regression-sig { font-size: 12.5px; font-weight: 600; margin-bottom: 12px; }
+.regression-detail { font-size: 12.5px; color: var(--ink-soft); margin: 0 0 8px; }
+.regression-note { font-size: 12px; color: var(--ink-soft); line-height: 1.5; margin: 0; padding-top: 10px; border-top: 1px solid var(--line); }
+.regression-unusable { background: var(--paper); border-radius: var(--radius); padding: 12px 14px; font-size: 13px; color: var(--ink-soft); }
+.regression-unusable p { margin: 0; line-height: 1.5; }
+
 .bar-row { display: grid; grid-template-columns: 150px 1fr 34px; align-items: center; gap: 10px; margin-bottom: 10px; }
 .bar-row .name { font-size: 13px; }
 .bar-track { height: 8px; background: #ece9e2; border-radius: 5px; overflow: hidden; }

@@ -20,6 +20,13 @@ const SAMPLE = {
 
 let currentScorecard = null;
 let currentInsights = null;
+// Captured from the employee CSV parse response (if the upload included
+// tenure_months and performance_rating columns). Held here rather than
+// re-derived from form fields, since it's a computed statistical result,
+// not something a user hand-edits the way pay_gap_by_level is. Cleared
+// on a fresh employee CSV upload so a re-upload always reflects the
+// latest file, never a stale prior result.
+let pendingRegressionData = null;
 
 const $ = (id) => document.getElementById(id);
 
@@ -107,6 +114,11 @@ function readForm() {
       Exec: parseFloat(v("repExec")) || 0,
     },
     job_postings: v("postings").split("\n").filter(Boolean),
+    // Not user-editable, so not read from a form field like everything
+    // above — carried through from the employee CSV parse response.
+    // /api/score omits it entirely (exclude_none) when this is null, so
+    // it's safe to always include the key here.
+    regression_adjusted_pay_equity: pendingRegressionData,
   };
 }
 
@@ -201,7 +213,66 @@ function renderScorecard(scorecard) {
     barsContainer.appendChild(row);
   });
 
+  renderRegressionPanel(scorecard.details && scorecard.details.regression_adjusted_pay_equity);
+
   $("emptyState").style.display = "none";
+}
+
+function renderRegressionPanel(regression) {
+  const panel = $("regressionPanel");
+  // Absent entirely means no employee CSV with tenure/performance columns
+  // was ever uploaded for this scorecard — nothing to say, so stay hidden
+  // rather than show an empty or confusing box.
+  if (!regression) {
+    panel.style.display = "none";
+    return;
+  }
+  panel.style.display = "block";
+  const content = $("regressionContent");
+
+  if (!regression.usable) {
+    // Present but not usable (e.g. too few rows) — shown, not hidden,
+    // per the backend's own honesty principle: absence of a result
+    // should never look like "nothing to see here" when the real story
+    // is "couldn't compute this responsibly." See pay_equity_regression.py.
+    content.innerHTML = `
+      <div class="regression-unusable">
+        <p>${regression.reason}</p>
+      </div>
+    `;
+    return;
+  }
+
+  const gap = regression.adjusted_gap_percent;
+  const direction = gap > 0 ? "Group A is paid more" : gap < 0 ? "Group B is paid more" : "No difference";
+  const magnitude = Math.abs(gap).toFixed(1);
+  const sigColor = regression.statistically_significant ? "var(--bad)" : "var(--ink-soft)";
+  // A p-value is never actually exactly zero — rounding a very small real
+  // p-value (common with a strong effect and a decent sample size) to 4
+  // decimal places can land on 0.0000, which JSON then serializes as the
+  // bare number 0. Displaying "p = 0" reads as a bug, not a real
+  // statistic — caught by actually running a real CSV through this,
+  // not by reading the code. "< 0.0001" is the honest way to show it.
+  const pDisplay = regression.p_value > 0 ? `p = ${regression.p_value}` : "p < 0.0001";
+  const sigLabel = regression.statistically_significant
+    ? `Statistically significant (${pDisplay})`
+    : `Not statistically significant (${pDisplay})`;
+
+  content.innerHTML = `
+    <div class="regression-headline">
+      <span class="num" style="color:${sigColor}">${magnitude}%</span>
+      <span class="label">${direction}, after controlling for level, tenure, and performance rating</span>
+    </div>
+    <div class="regression-sig" style="color:${sigColor}">
+      ${sigLabel}
+    </div>
+    <p class="regression-detail">
+      Based on ${regression.usable_n} employees with complete data
+      (${regression.group_a_n} Group A, ${regression.group_b_n} Group B).
+      R² = ${regression.r_squared}.
+    </p>
+    <p class="regression-note">${regression.note}</p>
+  `;
 }
 
 function renderInsights(insights) {
@@ -269,6 +340,7 @@ async function uploadCsv(endpoint, file, onSuccess, summaryElId) {
 function handleEmployeeUpload(e) {
   const file = e.target.files[0];
   if (!file) return;
+  pendingRegressionData = null;
   uploadCsv("/api/parse/employee", file, (data) => {
     if (data.pay_gap_by_level.IC != null) $("payIC").value = data.pay_gap_by_level.IC.toFixed(1);
     if (data.pay_gap_by_level.Manager != null) $("payManager").value = data.pay_gap_by_level.Manager.toFixed(1);
@@ -284,6 +356,7 @@ function handleEmployeeUpload(e) {
     if (data.promotion.time_to_promotion_months.group_a != null) $("ttpA").value = data.promotion.time_to_promotion_months.group_a.toFixed(1);
     if (data.promotion.time_to_promotion_months.group_b != null) $("ttpB").value = data.promotion.time_to_promotion_months.group_b.toFixed(1);
     updateAllGroupBHints();
+    pendingRegressionData = data.regression_adjusted_pay_equity || null;
   }, "employeeSummary");
 }
 
