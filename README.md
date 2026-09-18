@@ -347,29 +347,29 @@ regression-adjusted pay equity), all covered above:
   "works locally" and "works in the real target environment" are
   genuinely different tests.
 - **Render's Auto-Deploy was broken for several pushes (Sept 10–18, 2026)
-  — root cause found and fixed.** Every push in that window required a
-  manual "Deploy latest commit" click; Render's Deploys tab never picked
-  up new commits on its own. Root cause: Render's GitHub connection had
-  lost visibility into this specific repo (`xbuyan/usawa` no longer
-  appeared when searching for it in Render's "Update Source" dialog),
-  even though Build & Deploy settings themselves looked correct
-  (right repo shown, right branch, Auto-Deploy set to "On Commit").
-  Fixed by re-selecting the repo through Render's Update Source flow.
-  **One real gotcha hit during the fix**: that flow resets Build/Start
-  Command fields to generic defaults — it silently offered
-  `gunicorn app:app` in place of the actual tuned command
+  — root cause found and fixed, confirmed working.** Every push in that
+  window required a manual "Deploy latest commit" click; Render's
+  Deploys tab never picked up new commits on its own. Root cause:
+  Render's GitHub connection had lost visibility into this specific repo
+  (`xbuyan/usawa` no longer appeared when searching for it in Render's
+  "Update Source" dialog), even though Build & Deploy settings
+  themselves looked correct (right repo shown, right branch, Auto-Deploy
+  set to "On Commit"). Fixed by re-selecting the repo through Render's
+  Update Source flow. **One real gotcha hit during the fix**: that flow
+  resets Build/Start Command fields to generic defaults — it silently
+  offered `gunicorn app:app` in place of the actual tuned command
   (`--workers 2 --worker-class gthread --threads 4 --timeout 120
   --graceful-timeout 30 --access-logfile - --error-logfile -`). Caught
   and corrected before deploying, by diffing against `render.yaml`
   rather than accepting the modal's pre-filled value — losing
   `--timeout 120` specifically would have risked the AI insights call
   getting killed mid-request under gunicorn's 30s default timeout.
-  **This exact commit is the live test of whether the fix holds** — it
-  should reach Render without anyone clicking Manual Deploy. If you're
-  reading this in the Render dashboard and it required a manual trigger
-  again, the fix didn't stick; the underlying cause is still unknown
-  (possibly stale GitHub App permissions, per
-  `github.com/settings/installations`), not confirmed to be permanent.
+  **Confirmed fixed**: the commit that added this note reached Render
+  and deployed with no manual trigger — verified directly in Render's
+  Deploys tab, not assumed. If a future push ever needs a manual deploy
+  again, treat that as a regression worth re-diagnosing, not "back to
+  normal" — this was a real, once-broken thing, not an inherent quirk of
+  the platform.
 
 ## Updating the scoring logic
 
