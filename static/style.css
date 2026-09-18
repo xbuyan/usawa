@@ -141,6 +141,26 @@ body {
 .btn-row { display: flex; gap: 10px; margin-top: 18px; flex-wrap: wrap; }
 
 button { font-family: inherit; font-size: 13.5px; font-weight: 600; border-radius: var(--radius); padding: 10px 18px; cursor: pointer; border: 1px solid transparent; }
+
+/* .btn-primary / .btn-ghost are used both on actual <button> elements
+   (which already inherit padding/font-size/border-radius from the
+   generic button{} rule above) and on <a> tags styled to look like
+   buttons (landing page CTAs). Anchors don't match button{}, and until
+   this fix, .btn-primary/.btn-ghost only carried background/color —
+   every anchor usage relied on being inside a context that separately
+   set padding and sizing (.hero .cta-row, .cta-band). Outside those
+   contexts (e.g. the live demo page), an <a class="btn-ghost"> rendered
+   with no padding, no radius, and no visible border at all. Baking the
+   same values button{} already uses directly into these classes makes
+   them work correctly anywhere, on any element — found via an actual
+   rendered screenshot showing two broken, un-padded buttons, not by
+   reading the CSS and assuming it was fine.
+*/
+.btn-primary, .btn-ghost {
+  font-family: inherit; font-size: 13.5px; font-weight: 600;
+  border-radius: var(--radius); padding: 10px 18px; cursor: pointer;
+  border: 1px solid transparent;
+}
 .btn-primary { background: var(--indigo); color: #fff; }
 .btn-primary:hover { background: #26325a; }
 .btn-primary:disabled { background: #a9afc4; cursor: not-allowed; }
