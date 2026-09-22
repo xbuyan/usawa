@@ -23,6 +23,8 @@ VALID_ACTIONS = {
     "client_report_created",
     "client_report_viewed",
     "client_report_deleted",
+    "chat_message_sent",
+    "sharing_preference_changed",
 }
 
 

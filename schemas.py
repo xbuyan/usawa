@@ -84,6 +84,21 @@ class SaveClientRequest(BaseModel):
     insights: Optional[Dict] = None
 
 
+class ChatRequest(BaseModel):
+    # Question is length-capped again in chatbot.py (prompt-injection
+    # surface control lives there, close to the prompt itself).
+    question: str = Field(min_length=1, max_length=2000)
+    conversation_id: Optional[int] = Field(default=None, ge=1)
+    # Optional snapshot of the user's current results so the assistant can
+    # answer "why is my hiring score low?" specifically. Length-capped: it
+    # round-trips through the prompt as compact context.
+    scorecard: Optional[Dict] = None
+
+
+class UpdateSharingRequest(BaseModel):
+    share_anonymized_data: bool
+
+
 def validation_error_response(exc: ValidationError) -> dict:
     """Turns a Pydantic ValidationError into a clean, field-level JSON error."""
     errors = []

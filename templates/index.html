@@ -29,6 +29,7 @@
   <aside class="app-tabs">
     <button class="tab-btn active" data-tab="data">Data entry</button>
     <button class="tab-btn" data-tab="results">Scorecard &amp; insights</button>
+    <button class="tab-btn" data-tab="assistant">Assistant</button>
     <button class="tab-btn" data-tab="saved">Saved clients</button>
   </aside>
 
@@ -147,7 +148,53 @@
   </div>
   </section>
 
+  <section data-tab-panel="assistant" style="display:none">
+
+  <div class="panel">
+    <p class="panel-title"><span>DEI ASSISTANT</span>
+      <span class="hint-text" style="margin-left:auto;font-size:11.5px">Grounded in our vetted guidance library — answers cite their sources</span>
+    </p>
+
+    <div class="assistant-layout">
+      <div class="conversation-list" id="conversationList">
+        <button class="btn-primary new-convo-btn" id="newConversationBtn" style="width:100%">+ New conversation</button>
+        <div id="conversationsItems"></div>
+      </div>
+
+      <div class="chat-column">
+        <div class="chat-window" id="chatWindow" aria-live="polite">
+          <div class="chat-msg assistant">
+            <div class="chat-bubble">
+              <p>Ask me anything about DEI practice — hiring, pay equity, promotion, inclusion.</p>
+              <p class="chat-example">Try: “How do I write an inclusive job posting for a senior engineer role?”</p>
+            </div>
+          </div>
+        </div>
+        <div class="chat-input-row">
+          <textarea id="chatInput" rows="2" placeholder="Ask about inclusive hiring, pay equity, promotion practice…"></textarea>
+          <button class="btn-primary" id="chatSendBtn">Ask</button>
+        </div>
+        <div class="chat-meta">
+          <label class="share-toggle">
+            <input type="checkbox" id="shareToggle">
+            <span>Contribute anonymized scorecards to peer benchmarks (no company name, no account link — ever)</span>
+          </label>
+        </div>
+        <div id="chatError" class="error-box" style="display:none"></div>
+      </div>
+    </div>
+  </div>
+  </section>
+
   <section data-tab-panel="results" style="display:none">
+
+  <div class="panel" id="benchmarksPanel" style="display:none">
+    <p class="panel-title"><span>HOW YOU COMPARE</span>
+      <span class="hint-text" style="margin-left:auto;font-size:11.5px" id="benchmarksCohortNote"></span>
+    </p>
+    <div id="benchmarksContent"></div>
+    <div id="patternsContent" style="margin-top:14px"></div>
+  </div>
 
   <div class="panel" id="scorecardPanel" style="display:none">
     <p class="panel-title"><span>SCORECARD</span></p>
@@ -186,5 +233,6 @@
   </div>
 </div>
 <script src="{{ url_for('static', filename='app.js') }}"></script>
+<script src="{{ url_for('static', filename='assistant.js') }}"></script>
 </body>
 </html>

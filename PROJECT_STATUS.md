@@ -1,11 +1,12 @@
 # Usawa — Project Status
 
-**Last updated:** after the September 2026 hardening pass (Redis rate
-limiting, account lockout, flexible CSV column mapping, dependency
-scanning + CI, an audit log with real client-IP resolution, and
-regression-adjusted pay equity) — and after the first real production
-deploy attempt caught and fixed a genuine migration bug (see "Production
-incident" section below).
+**Last updated:** after the September 2026 learning-layer phase — the
+recommendation engine (anonymized cross-company benchmarks + mined
+patterns) and the grounded DEI assistant (retrieval-augmented Claude
+chat over a curated knowledge base) — on top of the hardening pass
+(Redis rate limiting, account lockout, flexible CSV column mapping,
+dependency scanning + CI, an audit log with real client-IP resolution,
+and regression-adjusted pay equity).
 
 **Read this file first in any new conversation about this project** — it's
 the source of truth for what's done, what's not, and the non-negotiable
@@ -84,7 +85,8 @@ a settled number.
   (Flask-Migrate), NOT `db.create_all()` in production.
 - **Auth:** Flask-Login, session-based, scrypt password hashing
 - **AI:** Anthropic Claude API for generating findings/recommendations
-  (`ai_insights.py`)
+  (`ai_insights.py`) and for the grounded DEI assistant (`chatbot.py`,
+  retrieval-augmented over `kb_documents.py` via `knowledge_base.py`)
 - **Frontend:** Vanilla JS (no framework/build step) — `static/app.js` for
   the main tool, separate small JS files for login/register/forgot-password
   pages. Deliberately not React/Babel (that was the earlier in-chat artifact
@@ -192,6 +194,150 @@ and the AI call's latency.
   card kit).
 
 ---
+
+## Learning-layer phase — DONE, tested (recommendation engine + DEI assistant)
+
+The two features that make the product get smarter with more data, built
+September 2026 under the same standard: every claim below backed by a test
+in the suite.
+
+1. **The learning layer / recommendation engine** (`benchmarks.py`,
+   `models.py`): when a user **opts in** (`share_anonymized_data`, off by
+   default — consent is explicit), saving a report writes an anonymized
+   `CompanySnapshot`. Privacy is structural, not promised: the snapshot
+   table has **no user_id column and no company name field** — capture's
+   signature physically cannot receive them (tested), size is stored as a
+   coarse band (micro ≤50 / small / medium / large), and **no cohort
+   statistic exists below MIN_COHORT=5 companies** — absence in the
+   `benchmark_stats` table IS the k-anonymity enforcement, tested at the
+   database level.
+
+   Cohort percentiles (10/25/50/75/90 per metric) are **materialized** into
+   `benchmark_stats` so serving a comparison is an indexed point lookup —
+   the read path is already million-user-shaped. Recompute is **debounced**
+   (once per 60s per process) so a burst of saves can't rebuild tables on
+   every request (tested).
+
+   **Pattern mining**: associations like "companies whose hiring-funnel
+   score is above N tend to show X points higher median pay-equity score"
+   are computed (Spearman rank correlation, implemented dependency-free)
+   per cohort, kept only when n ≥ 5, both sides of the median split ≥ 3
+   companies (which, with a median split, means patterns effectively
+   need n ≥ 6 even though stats materialize from 5), and |r| ≥ 0.35.
+   **Verified against a synthetic cohort with a known answer** (a
+   constructed perfect funnel↔pay-equity relationship must be recovered,
+   r ≈ 1.0, correct delta sign, sample size attached) — and weak/constant
+   relationships are tested to be suppressed. A cohort that doesn't qualify
+   yields NO pattern, never a hedged guess.
+
+   **E2E-verified (live, 2026-09-22):** the full new-endpoint surface was
+   exercised against the real running app — CSRF enforced (token-less POST
+   → 400), session auth (anon → 401), sharing toggle round-trip, snapshot
+   capture on opt-in only, chat failure-then-rollback with no key, chat
+   happy path with persistence + sources + audit entries + cross-user
+   ownership checks, materialization with exact known percentiles, and
+   serving with the cohort fallback chain. That run caught a real bug:
+   the pattern-split used the upper-middle element as the "median", so
+   every even-sized cohort split 4/2 and mined nothing at n=5–6 — fixed
+   to a true median split with a regression test
+   (`test_pattern_mining_works_at_minimum_cohort_size`).
+
+   **Demo seeding (first deploy):** `seed_demo_data.py` generates 48
+   deterministic synthetic companies (flagged `seeded=True` in the DB —
+   its own migration, backfilled False for real captures) so the
+   benchmarks feature has data on a fresh deploy. Honesty rules, all
+   enforced and tested: the seeder refuses when real (unseeded)
+   snapshots exist, a plain re-run refuses instead of silently doubling
+   cohort sizes, `--force` replaces only demo rows, and `--clear` removes
+   only demo rows and rebuilds cohorts from what remains. Demo rows go
+   through the same `capture_snapshot` path as real data, so they are
+   structurally identical and provably carry no identity fields.
+
+   **Deploy wiring verified (2026-09-22):** `render.yaml` already injects
+   `REDIS_URL` from the provisioned key-value store and prompts for
+   `ANTHROPIC_API_KEY` at deploy time (`sync: false`); the build command
+   runs `flask db upgrade` on every deploy, which applies the learning
+   layer, chat, and seeded-flag migrations against a populated DB — the
+   new `test_seeded_flag_migration_applies_to_table_with_existing_snapshot`
+   pins exactly that scenario. `ANTHROPIC_MODEL` was added as an optional
+   dashboard lever for switching models without a code change.
+
+   Served via `GET /api/benchmarks` (cohort fallback chain:
+   industry+band → band-wide → any band, always labeled with which cohort
+   produced each number and its n), and fed into `/api/insights` as
+   `learned_patterns` so AI recommendations reference what actually holds
+   among peers (the insights system prompt treats them as correlations,
+   names the sample size, and forbids presenting them as causation or law).
+
+   **Scale path (the honest version):** reads are materialized lookups;
+   the write path is debounced. Past that, move recompute to a background
+   queue (RQ/Celery — Redis is already in the stack) and point capture at
+   the queue; the functions are pure (rows in, stats out) so they move
+   without rewriting. This is written in benchmarks.py's docstring, not
+   just here.
+
+2. **The grounded DEI assistant** (`chatbot.py`, `knowledge_base.py`,
+   `kb_documents.py`): chat over a **curated 15-document knowledge base**
+   (inclusive postings incl. a worked senior-engineer example, the
+   four-fifths rule, structured interviews, pay-equity methodology,
+   promotion calibration, pipeline reading, Kenya-specific law/context,
+   benchmark interpretation, sourcing, retention, program setup,
+   accessibility, ERGs, CSV data handling). Retrieval is TF-IDF with
+   **match-qualification** (≥2 distinct matched terms, or 1 match on a
+   curated tag term) so one incidental word can't manufacture grounding —
+   the "capital of France" test and the "parking permit" test both return
+   NO grounding.
+
+   **Anti-hallucination is a prompt contract, not a hope:** when retrieval
+   finds nothing, the model is explicitly instructed to say it lacks vetted
+   guidance and share only confident generalities — no invented statistics,
+   no fake citations, no legal conclusions (the four-fifths rule is
+   framed as a screening standard, never a statute). Answers cite
+   `[source: doc_id]` inline; the API returns the structured source list
+   and the UI renders it as source chips. Tested: grounded vs ungrounded
+   paths build different prompts, sources round-trip.
+
+   Conversations persist per-user (`conversations`/`chat_messages`, scoped
+   and ownership-checked like every other resource — a foreign
+   conversation_id starts a NEW conversation and stays unreadable, tested),
+   history is capped (6 turns / 6000 chars), questions capped at 2000 chars
+   at three layers (schema 400s, chatbot truncates — tested), failed
+   generations roll back cleanly (tested: no dangling conversation), and
+   the endpoint is rate-limited 20/hour like the other money-costing AI
+   calls. Every chat send is in the audit log.
+
+3. **New tests: 75 → 115.** New files: `test_knowledge_base.py` (retrieval
+   precision + every-document-reachable guard + never-raises contract),
+   `test_chat.py` (persistence, ownership isolation, history, honest 502s,
+   prompt capping, grounded/ungrounded prompt construction — Claude mocked
+   at the API boundary), `test_benchmarks.py` (exact percentile values,
+   k-anonymity at the DB level, pattern mining vs a known-answer cohort,
+   suppression of weak patterns, debounce, snapshot privacy structure,
+   opt-in end-to-end flow), plus a migration-chain test for the new
+   migration. The full suite passes against a real Redis for the rate-
+   limiting tests, same as before.
+
+4. **Migration** (`b4f2c91a7d3e`): five new tables + `users.share_
+   anonymized_data` (Boolean NOT NULL **with server_default=sa.false()** —
+   the exact lesson from the email_verified production incident, applied
+   by reflex this time and tested against a pre-existing row).
+
+**Honest limits of this phase, stated plainly:**
+- The chatbot's answer QUALITY is not machine-claimable — the tests prove
+  grounding decisions, prompt construction, and failure modes, not that
+  Claude's prose is good. Needs human review of real conversations.
+- Retrieval is TF-IDF over a small curated corpus — deliberately right for
+  this size, and the retrieval seam (same function signature) is where
+  pgvector slots in when the corpus outgrows synonym-tag matching.
+- Pattern mining needs real data volume before patterns are interesting;
+  until a cohort has 5+ opted-in companies, the UI honestly says so.
+- Benchmarks compare only opted-in companies (selection bias is real and
+  is stated to users in the KB's benchmark-interpretation document).
+- The assistant's scorecard context is the compact sub-score view, not the
+  full detail payload — sufficient for "why is my score low" questions,
+  but deep-dive QA over raw CSV aggregates is future work.
+- Email deliverability, CI-in-Actions, and real-customer validation of the
+  earlier gaps listed below remain open — unchanged by this phase.
 
 ## Tier 3 — mostly not started (product maturity, planned)
 
@@ -406,15 +552,20 @@ work — per this project's own honesty standard.
 
 ## Known gaps — engineering side (tracked honestly, not hidden)
 
-Current as of the September 2026 hardening pass:
+Current as of the September 2026 learning-layer phase:
 
 - Email deliverability untested (see Tier 2 notes above)
-- No industry benchmarks yet
 - Regression-adjusted pay equity is API-only — not yet wired into the
   frontend UI, and not yet validated against real (non-synthetic) customer
   data (see hardening-pass note above)
 - CI workflow written and locally verified, but not yet confirmed running
   inside GitHub Actions on a real push (see hardening-pass note above)
+- Learning layer unvalidated against real cohort data: the math is tested
+  against synthetic cohorts with known answers, but no real opted-in
+  cohort exists yet, so real-world pattern quality is unknown
+- Chatbot answer quality needs human review over real conversations;
+  the KB corpus (15 docs) is a starting point that should grow from
+  ungrounded-question mining (chat_messages with NULL sources_json)
 
 ## Known gaps — legal/business side (NOT engineering-fixable, flagged explicitly)
 
@@ -449,7 +600,7 @@ python3 app.py
 # open http://localhost:5000
 ```
 
-Run the test suite: `pytest tests/ -v` (should show 75 passed)
+Run the test suite: `pytest tests/ -v` (should show 127 passed)
 
 Note: `test_rate_limiting.py` requires a real Redis server reachable at
 `REDIS_URL` (defaults to `redis://localhost:6379/0`) — install Redis
