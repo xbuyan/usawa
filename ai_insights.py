@@ -33,7 +33,13 @@ Your job:
    all senior engineering hires" not "improve hiring practices").
 4. Do not diagnose intent or accuse anyone of bias — describe patterns and
    structural causes, not individual blame.
-5. Output valid JSON only, no preamble, no markdown formatting, matching this
+5. If "learned_patterns" appears in the payload, these are associations mined
+   from anonymized peer companies (correlations, not proven causes). When one
+   is relevant to a finding, reference it explicitly as context — e.g. "among
+   similar companies, those with weak hiring-funnel scores tend to show lower
+   pay equity" — and always mention the sample size it rests on. Never
+   present a pattern as causation or as a legal finding.
+6. Output valid JSON only, no preamble, no markdown formatting, matching this
    schema:
 
 {
@@ -59,7 +65,8 @@ class InsightsGenerationError(Exception):
     pass
 
 
-def generate_insights(scorecard: dict, company_size=None, industry=None, benchmarks=None) -> dict:
+def generate_insights(scorecard: dict, company_size=None, industry=None,
+                      benchmarks=None, learned_patterns=None) -> dict:
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         raise InsightsGenerationError(
@@ -79,6 +86,8 @@ def generate_insights(scorecard: dict, company_size=None, industry=None, benchma
     }
     if benchmarks:
         payload["industry_benchmarks"] = benchmarks
+    if learned_patterns:
+        payload["learned_patterns"] = learned_patterns[:3]
 
     last_error = None
     for attempt in range(1, MAX_RETRIES + 1):

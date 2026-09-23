@@ -3,8 +3,25 @@
 A DEI equity audit tool: upload employee and applicant data, get a scored
 breakdown of pay, promotion, hiring, and representation gaps — scored against
 the EEOC's four-fifths rule where a real legal standard applies — plus
-AI-generated recommendations. Accounts are authenticated, and every saved
-report is scoped to the user who created it.
+AI-generated recommendations grounded in peer data. Accounts are
+authenticated, and every saved report is scoped to the user who created it.
+
+Three product layers:
+
+1. **The audit tool** — CSV upload → scorecard (four-fifths rule for
+   hiring/promotion, practice-based measures elsewhere) → AI
+   recommendations.
+2. **The learning layer** — an opt-in, anonymized, k-anonymized benchmark
+   network. As more companies participate, Usawa materializes cohort
+   percentiles ("your pay equity score is at the 62nd percentile of small
+   software companies") and **mines patterns** ("cohorts with weak
+   hiring-funnel scores tend to show lower pay equity — correlation 0.6,
+   based on 40 companies"). The recommendation engine gets more specific
+   with more data, and every number names its cohort and sample size.
+3. **The DEI assistant** — a retrieval-grounded chatbot over a curated
+   knowledge base ("how do I write an inclusive job posting for a senior
+   engineer role?"). Answers cite their sources; when nothing in the KB
+   grounds an answer, it says so instead of improvising.
 
 ## What's in this project
 
@@ -12,10 +29,20 @@ report is scoped to the user who created it.
 equity-scorecard-app/
 ├── app.py                 # Flask backend — all routes, auth wiring
 ├── auth.py                 # Registration, login, logout
-├── models.py                # SQLAlchemy models (User, ClientReport)
+├── models.py                # SQLAlchemy models (User, ClientReport, CompanySnapshot,
+│                            #   BenchmarkStats, LearnedPattern, Conversation, ChatMessage)
 ├── dei_scorecard.py          # Scoring formulas (four-fifths rule, pay gap, etc.)
 ├── csv_aggregation.py         # Turns raw employee/applicant CSVs into scores
+├── pay_equity_regression.py    # OLS regression-adjusted pay gap
 ├── ai_insights.py              # Calls the Claude API for recommendations
+├── benchmarks.py               # Learning layer: snapshot capture, cohort percentiles,
+│                              #   pattern mining, k-anonymity, debounced recompute
+├── chatbot.py                  # Grounded DEI assistant (retrieval + Claude)
+├── knowledge_base.py           # TF-IDF retrieval over the KB (pgvector-ready seam)
+├── kb_documents.py             # The curated DEI knowledge base (15 documents)
+├── seed_demo_data.py           # Deterministic demo companies for the learning layer
+│                              #   (first-deploy data; refuses to touch real captures)
+├── schemas.py                  # Pydantic request validation
 ├── requirements.txt
 ├── templates/
 │   ├── index.html               # Main app page (requires login)
@@ -23,8 +50,9 @@ equity-scorecard-app/
 │   └── register.html              # Registration page
 ├── static/
 │   ├── style.css
-│   └── app.js                      # Frontend logic (vanilla JS, no build step)
-├── render.yaml               # Render Blueprint — deploys web service + Postgres as one unit
+│   ├── app.js                      # Frontend logic (vanilla JS, no build step)
+│   └── assistant.js                 # Chat UI + benchmarks panel (vanilla JS)
+├── render.yaml               # Render Blueprint — deploys web service + Postgres + Redis as one unit
 ├── Procfile                   # Start command for platforms using the Heroku-style convention (Railway, etc.)
 └── usawa.db                         # Created automatically on first run (SQLite, local dev only)
 ```
@@ -74,6 +102,8 @@ only applies to local development; production uses Postgres (see below).
 | `PORT` | No | Defaults to 5000 |
 | `FLASK_DEBUG` | No | Leave unset (or `0`) in production. Never set to `1` outside local dev — debug mode exposes a lot more than it should if it's ever reachable publicly. |
 | `SENTRY_DSN` | No | From sentry.io, if you want error monitoring. Does nothing if unset — no behavior change, no crash. |
+| `REDIS_URL` | Yes (prod) | Shared storage for rate limiting across gunicorn workers. `render.yaml` provisions it automatically. Loud startup warning if unset in production mode. |
+| `ANTHROPIC_MODEL` | No | Overrides the model used by `/api/chat` and `/api/insights` (default: `claude-sonnet-5`). A deploy lever — switch models from the dashboard without a code change. |
 | `MAIL_SERVER` | No | SMTP host (e.g. `smtp.sendgrid.net`). Without this, password-reset and verification emails are logged instead of sent — fine for testing, not for real users who need to actually receive the email. |
 | `MAIL_PORT` | No | Defaults to 587 (standard SMTP+TLS port) |
 | `MAIL_USERNAME` | No | SMTP auth username |
@@ -100,6 +130,41 @@ reads it automatically via "Blueprints."
 This is the reproducible path — if you ever need a staging environment or
 have to rebuild this from scratch, it's one blueprint apply instead of
 re-clicking through dashboard settings from memory.
+
+#### First deploy checklist (new features)
+
+Everything the new features need is already wired in `render.yaml`:
+
+- `REDIS_URL` is injected from the provisioned key-value store — the
+  rate limiter is correctly shared across both gunicorn workers from the
+  first request.
+- `ANTHROPIC_API_KEY` is the one `sync: false` value you paste at deploy
+  time. Without it the app still boots — `/api/chat` and `/api/insights`
+  return an honest 502 telling you the key is missing — but the AI
+  features are dead until you add it (Dashboard → your web service →
+  Environment → add `ANTHROPIC_API_KEY` → save, which redeploys).
+- `ANTHROPIC_MODEL` (optional, also `sync: false`) overrides the model
+  both AI features use, no code change needed.
+- Migrations run on every build (`flask db upgrade` in the build
+  command), so the learning-layer and chat tables — and the
+  `company_snapshots.seeded` flag — exist before the first request.
+
+**Demo data for the benchmarks feature:** a fresh deploy has empty
+cohorts, so `/api/benchmarks` honestly says "not enough companies yet"
+for everything. To demo the feature with data, run the seeder once from
+a shell (`render.com shell` or locally against the production DB):
+
+```
+python3 seed_demo_data.py
+```
+
+It generates 48 deterministic synthetic companies (4 industries × 2 size
+bands × 6), materializes cohort percentiles, and mines realistic
+patterns. It refuses to run if any REAL company data exists (demo rows
+are flagged `seeded` in the DB and never blend into real cohorts), a
+plain re-run refuses instead of silently doubling cohort sizes, and
+`--clear` removes only the demo rows. See the header of
+`seed_demo_data.py` for the full contract and `--force`/`--status`.
 
 ### Render.com — manual dashboard setup (alternative)
 
@@ -182,11 +247,27 @@ tested, not just written — see `tests/` for the automated suite.
 - **Audit log** (`AuditLog` model, `audit_log.py`) — a durable, queryable
   record (not just a log line) of who did what and when: login
   success/failure/lockout, employee/applicant CSV uploads, AI insights
-  generation, and creating/viewing/deleting a saved client report. Scoped
+  generation, assistant messages, sharing-preference changes, and
+  creating/viewing/deleting a saved client report. Scoped
   to `user_id` the same way client reports are; exposed via
   `GET /api/audit-log` for a user's own history. Deliberately does NOT log
   every read (e.g. the summary client list) to avoid drowning the
   signal — only actions that touch actual sensitive data content.
+- **Learning-layer privacy is structural** (`benchmarks.py`, `models.py`) —
+  benchmark contribution is opt-in per user (`share_anonymized_data`, off
+  by default); snapshots carry no user_id column and no company name
+  (capture's signature cannot receive either — tested); company size is
+  bucketed into bands so exact headcount can't identify anyone; and no
+  cohort statistic or pattern is materialized below MIN_COHORT = 5
+  companies (tested at the database level — absence IS the enforcement).
+  The benchmarks UI states the selection-bias caveat to users.
+- **Assistant anti-hallucination is enforced in code, not vibes** —
+  retrieval requires meaningful overlap (≥2 distinct matched terms, or a
+  curated-tag match) before any document is trusted as grounding; with no
+  match, the model is explicitly instructed to say it lacks vetted
+  guidance. Questions are length-capped at the schema, again in the
+  chatbot, and history is bounded (6 turns), so prompt cost per request is
+  capped. Conversations are ownership-checked like every other resource.
 - **Security headers** (Flask-Talisman) — Content-Security-Policy,
   X-Frame-Options, X-Content-Type-Options, and Strict-Transport-Security are
   set on every response. Verified directly in response headers.
@@ -216,11 +297,16 @@ tested, not just written — see `tests/` for the automated suite.
   (`migrations/versions/`) — applying it creates the exact expected tables.
   Future schema changes go through `flask db migrate` / `flask db upgrade`,
   which can alter existing tables safely; `db.create_all()` cannot.
-- **Automated test suite** (`tests/`, pytest) — 75 tests covering auth,
+- **Automated test suite** (`tests/`, pytest) — 115 tests covering auth,
   account lockout, audit logging, data isolation, exact four-fifths-rule boundary cases,
   CSV parsing edge cases and flexible column mapping, regression-adjusted
   pay equity (verified against synthetic data with a known true answer),
-  migrations against tables with pre-existing rows (added after a real
+  the learning layer (exact percentile values, k-anonymity at the DB
+  level, pattern mining vs a known-answer cohort, suppression of weak
+  patterns, snapshot privacy structure, debounce), the assistant
+  (retrieval precision, grounded vs ungrounded prompt construction,
+  conversation ownership isolation, honest failure modes), migrations
+  against tables with pre-existing rows (added after a real
   production migration failure — see PROJECT_STATUS.md), rate limiting
   (against a real Redis server), password reset, email verification, and
   Pydantic validation. Run with `pytest tests/ -v`. This
@@ -239,8 +325,95 @@ pytest tests/ -v
 
 Tests run against an isolated in-memory SQLite database — they never touch
 your real `usawa.db` or a production database, and don't require
-`ANTHROPIC_API_KEY` to be set (AI insights calls aren't covered by automated
-tests yet, since that needs either a real API key or a mocked client).
+`ANTHROPIC_API_KEY` to be set (the AI-calling code paths are tested with
+the Anthropic client mocked at the API boundary; what's proven is our
+grounding decisions, prompt construction, persistence, and failure modes —
+not the model's prose quality).
+
+## API reference (current surface)
+
+| Method & path | What it does |
+|---|---|
+| `POST /api/auth/register` | Create account (rate-limited 10/hr) |
+| `POST /api/auth/login` | Log in (15/hr, account lockout after 5 failures) |
+| `POST /api/auth/logout` | Log out |
+| `GET /api/auth/me` | Session info incl. `share_anonymized_data` |
+| `POST /api/auth/forgot-password` / `reset-password` | Password reset flow |
+| `POST /api/auth/resend-verification` | Resend verification email (5/hr) |
+| `POST /api/parse/employee` | Upload employee CSV → aggregated metrics (30/hr) |
+| `POST /api/parse/applicant` | Upload applicant CSV → funnel counts (30/hr) |
+| `POST /api/score` | Run the scorecard on submitted data |
+| `POST /api/insights` | AI recommendations, enriched with learned peer patterns (30/hr) |
+| `GET/POST /api/clients` | List / save client reports (owned by current user) |
+| `GET/DELETE /api/clients/<id>` | Fetch / delete one report (owner only) |
+| `POST /api/chat` | Ask the grounded DEI assistant (20/hr) |
+| `GET /api/conversations` | List the user's conversations |
+| `GET/DELETE /api/conversations/<id>` | Fetch / delete one conversation (owner only) |
+| `GET /api/benchmarks` | Compare a scorecard to anonymized peer cohorts |
+| `POST /api/sharing` | Opt in/out of anonymous benchmark contribution |
+| `GET /api/audit-log` | The user's own audit history (200 most recent) |
+| `GET /healthz` | Uptime check incl. real DB round-trip |
+
+All mutating endpoints require the `X-CSRFToken` header; all user-owned
+resources are query-scoped to `current_user.id`.
+
+## How the learning layer works (and its guarantees)
+
+1. **Opt-in capture.** A user toggles "Contribute anonymized scorecards to
+   peer benchmarks." From then on, saving a report writes one
+   `CompanySnapshot`: industry (normalized), size **band** (micro ≤50 /
+   small / medium / large), the five sub-scores, overall score, and
+   aggregate metrics as JSON. No user id. No company name. The capture
+   function's signature makes storing either impossible.
+2. **Materialization.** Cohort percentiles (10/25/50/75/90 per metric) are
+   precomputed into `benchmark_stats`, one row per cohort × metric ×
+   point. Serving a comparison is an indexed point lookup — the read path
+   is O(1) regardless of how many million snapshots exist. Recompute runs
+   at most once per 60s per process (debounced); past single-process
+   scale, recompute moves to a background queue (Redis is already in the
+   stack) without changing the pure compute functions.
+3. **K-anonymity.** A cohort with fewer than 5 companies for a metric
+   materializes NOTHING — the row's absence is the enforcement, verified
+   by tests at the database level. The UI also never shows a statistic
+   without its cohort label and n.
+4. **Pattern mining.** Within each cohort, condition metrics
+   (hiring_funnel, job_language, representation_pipeline) are tested
+   against outcomes (pay_equity, promotion_equity, overall) via Spearman
+   rank correlation, split at the condition median. Patterns below |r| =
+   0.35, or with fewer than 3 companies on either side, are discarded.
+   Surviving patterns carry their correlation and sample size everywhere
+   they're shown — including inside AI-generated insights, where the
+   system prompt forbids presenting them as causation or legal findings.
+5. **Serving.** `GET /api/benchmarks` walks the cohort fallback chain —
+   (your industry, your band) → (all industries, your band) → (any band) —
+   and states which cohort produced each number.
+
+**Selection-bias caveat, shown to users in-product:** companies that run
+equity audits aren't a random sample of companies; benchmarks compare you
+to similar *engaged* employers, not the market average.
+
+## How the DEI assistant is grounded
+
+- **Curated corpus** (`kb_documents.py`): 15 vetted documents covering
+  inclusive postings (with a worked senior-engineer example), the
+  four-fifths rule, structured interviews, pay-equity methodology,
+  promotion calibration, pipeline reading, Kenya-specific law and context,
+  benchmark interpretation, sourcing, retention, program setup,
+  accessibility, ERGs, and CSV data handling. Grows from real usage —
+  assistant answers with no retrieved sources are logged (NULL
+  `sources_json`) and mined to decide what to write next.
+- **Retrieval** (`knowledge_base.py`): TF-IDF with curated synonym tags,
+  plus a match-qualification rule (≥2 distinct matched terms, or a tag
+  match) so one incidental word can't produce false grounding. The
+  function signature is the seam for pgvector embeddings when the corpus
+  outgrows keyword-scale.
+- **Generation** (`chatbot.py`): Claude receives the retrieved documents
+  verbatim, a compact view of the user's current scorecard, and strict
+  rules: cite what you use as `[source: doc_id]`, never invent statistics
+  or legal citations, treat the four-fifths rule as a screening standard
+  (not a statute), and when nothing matches, say so. Sources are returned
+  structured and rendered as chips in the UI. Every message is stored on
+  the user's own conversation and audited.
 
 ## Managing schema changes
 
@@ -425,6 +598,12 @@ Representation pipeline (\"leaky pipeline\") drop-off has
 no regulatory standard at all — it's a descriptive pattern, useful for
 spotting where representation erodes, but should never be presented as a
 compliance finding.
+
+The same honesty standard applies to the **learning layer and the
+assistant**: benchmark numbers always name their cohort and sample size;
+mined patterns are labeled as correlations with their n, never causation;
+and assistant answers cite their sources or say plainly that no vetted
+guidance matched. None of these outputs are legal findings.
 
 **Before you pitch this as a product**, be direct with prospects about this
 split: the hiring/promotion numbers can be defended with a citation, the

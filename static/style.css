@@ -588,3 +588,100 @@ button { font-family: inherit; font-size: 13.5px; font-weight: 600; border-radiu
   .field-grid, .field-grid.three { grid-template-columns: 1fr 1fr; }
   .bar-row { grid-template-columns: 110px 1fr 30px; }
 }
+
+/* ------------------------------------------------------------------
+   DEI Assistant (chat)
+   ------------------------------------------------------------------ */
+
+.assistant-layout {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  gap: 18px;
+}
+
+.conversation-list { border-right: 1px solid var(--line); padding-right: 14px; }
+
+.new-convo-btn { margin-bottom: 12px; }
+
+.convo-item {
+  width: 100%; text-align: left;
+  background: none; border: none; cursor: pointer;
+  font: inherit; font-size: 12.5px; color: var(--ink);
+  padding: 7px 8px; border-radius: var(--radius);
+  display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.convo-item:hover { background: var(--indigo-soft); }
+.convo-item.active { background: var(--indigo-soft); font-weight: 600; }
+
+.chat-column { display: flex; flex-direction: column; min-width: 0; }
+
+.chat-window {
+  background: var(--paper);
+  border-radius: var(--radius);
+  padding: 14px;
+  max-height: 420px; min-height: 220px;
+  overflow-y: auto;
+  display: flex; flex-direction: column; gap: 10px;
+}
+
+.chat-msg { display: flex; }
+.chat-msg.user { justify-content: flex-end; }
+
+.chat-bubble {
+  max-width: 82%;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 9px 12px;
+  font-size: 13.5px;
+}
+
+.chat-msg.user .chat-bubble { background: var(--indigo); color: #fff; border-color: var(--indigo); }
+.chat-msg.assistant .chat-bubble p { margin: 0 0 8px; }
+.chat-msg.assistant .chat-bubble p:last-child { margin-bottom: 0; }
+.chat-msg.user .chat-bubble p { margin: 0; }
+
+.chat-example { color: var(--ink-soft); font-size: 12.5px; }
+
+.chat-sources { margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--line); }
+.chat-sources .tag {
+  display: inline-block; font-size: 10px; letter-spacing: 0.06em;
+  background: var(--gold-soft); color: var(--gold);
+  padding: 2px 7px; border-radius: 2px; margin-right: 5px; margin-bottom: 4px;
+}
+
+.chat-input-row { display: flex; gap: 8px; margin-top: 12px; }
+.chat-input-row textarea {
+  flex: 1; resize: vertical; min-height: 44px;
+  font: inherit; font-size: 13.5px; color: var(--ink);
+  padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.chat-meta { margin-top: 10px; }
+.share-toggle { display: flex; gap: 7px; align-items: flex-start; font-size: 11.5px; color: var(--ink-soft); cursor: pointer; }
+.share-toggle input { margin-top: 2px; }
+
+/* ------------------------------------------------------------------
+   Benchmarks (How you compare)
+   ------------------------------------------------------------------ */
+
+.benchmark-row {
+  display: grid; grid-template-columns: 150px 1fr 120px; gap: 10px;
+  align-items: center; padding: 8px 0;
+  border-bottom: 1px solid var(--line); font-size: 13px;
+}
+.benchmark-row:last-child { border-bottom: none; }
+.benchmark-unavailable { font-size: 12px; color: var(--ink-soft); }
+
+.pattern-item {
+  background: var(--paper); border-radius: var(--radius);
+  padding: 10px 12px; margin-bottom: 8px; font-size: 13px;
+}
+.pattern-item .pattern-n { display: block; font-size: 11px; color: var(--ink-soft); margin-top: 4px; }
+
+@media (max-width: 760px) {
+  .assistant-layout { grid-template-columns: 1fr; }
+  .conversation-list { border-right: none; padding-right: 0; border-bottom: 1px solid var(--line); padding-bottom: 12px; }
+  .benchmark-row { grid-template-columns: 110px 1fr 90px; }
+}

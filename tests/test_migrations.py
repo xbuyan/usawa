@@ -128,3 +128,73 @@ def test_full_migration_chain_applies_to_table_with_existing_row_at_every_step(t
     row = conn.execute("SELECT email FROM users WHERE email = 'survivor@company.com'").fetchone()
     conn.close()
     assert row is not None, "the pre-existing row must survive the entire chain"
+
+
+def test_learning_layer_migration_applies_to_table_with_existing_user(temp_db_path):
+    # share_anonymized_data is a NOT NULL boolean added to the existing
+    # users table — the exact class of migration that failed in production
+    # once already (see PROJECT_STATUS.md). Same protocol: real row first,
+    # then the migration must apply and backfill to False.
+    result = _run_flask_db(["upgrade", "e3d0b1ec9184"], temp_db_path)
+    assert result.returncode == 0, result.stderr
+
+    conn = sqlite3.connect(temp_db_path)
+    conn.execute(
+        "INSERT INTO users (email, password_hash, organization_name, email_verified, "
+        "failed_login_attempts, created_at) "
+        "VALUES ('preexisting@company.com', 'hash', 'RealCo', 0, 0, '2026-01-01 00:00:00')"
+    )
+    conn.commit()
+    conn.close()
+
+    result = _run_flask_db(["upgrade", "head"], temp_db_path)
+    assert result.returncode == 0, (
+        f"learning-layer migration failed against a table with a "
+        f"pre-existing row: {result.stderr}"
+    )
+
+    conn = sqlite3.connect(temp_db_path)
+    row = conn.execute(
+        "SELECT share_anonymized_data FROM users WHERE email = 'preexisting@company.com'"
+    ).fetchone()
+    tables = [r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+    conn.close()
+
+    assert row == (0,), "share_anonymized_data must backfill to False for existing users"
+    for expected in ("company_snapshots", "benchmark_stats", "learned_patterns",
+                     "conversations", "chat_messages"):
+        assert expected in tables, f"migration must create {expected}"
+
+
+def test_seeded_flag_migration_applies_to_table_with_existing_snapshot(temp_db_path):
+    # The deploy runs `flask db upgrade` on every build (render.yaml
+    # buildCommand), and by the time c8a1e4f2b9d5 ships, a production DB
+    # can already hold real captured snapshots. company_snapshots.seeded
+    # is a NOT NULL boolean added to that populated table — the exact
+    # class of migration that failed in production once (email_verified).
+    # Protocol: snapshot row first, then the migration must apply and
+    # backfill the existing row to False (it was a real capture).
+    result = _run_flask_db(["upgrade", "b4f2c91a7d3e"], temp_db_path)
+    assert result.returncode == 0, result.stderr
+
+    conn = sqlite3.connect(temp_db_path)
+    conn.execute(
+        "INSERT INTO company_snapshots (industry, size_band, overall_score, "
+        "metrics_json, features_json, created_at) "
+        "VALUES ('software', 'small', 61, '{}', '{}', '2026-01-01 00:00:00')"
+    )
+    conn.commit()
+    conn.close()
+
+    result = _run_flask_db(["upgrade", "head"], temp_db_path)
+    assert result.returncode == 0, (
+        f"seeded-flag migration failed against company_snapshots with a "
+        f"pre-existing row: {result.stderr}"
+    )
+
+    conn = sqlite3.connect(temp_db_path)
+    rows = conn.execute("SELECT industry, seeded FROM company_snapshots").fetchall()
+    conn.close()
+    assert rows == [("software", 0)], \
+        "pre-existing snapshot must survive and backfill to seeded=False"

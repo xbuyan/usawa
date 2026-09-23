@@ -165,6 +165,7 @@ def me():
         "email": current_user.email,
         "organization_name": current_user.organization_name,
         "email_verified": current_user.email_verified,
+        "share_anonymized_data": current_user.share_anonymized_data,
     })
 
 

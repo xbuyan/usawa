@@ -21,6 +21,12 @@ Routes:
   POST /api/clients             -> save a client report (owned by current user)
   GET  /api/clients/<id>        -> fetch one saved report (must be owner)
   DELETE /api/clients/<id>      -> delete a saved report (must be owner)
+  POST /api/chat                -> ask the DEI assistant (grounded in the curated KB)
+  GET  /api/conversations       -> list the current user's conversations
+  GET  /api/conversations/<id>  -> fetch one conversation with messages (must be owner)
+  DELETE /api/conversations/<id> -> delete a conversation (must be owner)
+  GET  /api/benchmarks          -> compare current scorecard to anonymized peer cohorts
+  POST /api/sharing             -> opt in/out of anonymous benchmark contribution
   GET  /healthz                 -> uptime monitoring target
 
 Run locally (SQLite, zero setup):
@@ -46,6 +52,7 @@ import csv
 import io
 import json
 import logging
+from datetime import datetime, timezone
 
 import sentry_sdk
 from sentry_sdk.integrations.flask import FlaskIntegration
@@ -58,16 +65,20 @@ from flask_migrate import Migrate
 from pydantic import ValidationError
 from werkzeug.exceptions import HTTPException
 
-from models import db, User, ClientReport, AuditLog
+from models import db, User, ClientReport, AuditLog, Conversation, ChatMessage
 from extensions import limiter
 import audit_log
+import benchmarks
+import chatbot
+from chatbot import ChatGenerationError
 from dei_scorecard import calculate_scorecard
 from csv_aggregation import aggregate_employee_rows, aggregate_applicant_rows
 from ai_insights import generate_insights, InsightsGenerationError
 from auth import auth_bp
 from email_utils import init_mail
 from logging_config import configure_logging
-from schemas import ScoreRequest, InsightsRequest, SaveClientRequest, validation_error_response
+from schemas import (ScoreRequest, InsightsRequest, SaveClientRequest, ChatRequest,
+                     UpdateSharingRequest, validation_error_response)
 
 # Sane upper bound on how many rows we'll process from an uploaded CSV.
 # Defense in depth alongside MAX_CONTENT_LENGTH: a file could be small in
@@ -333,11 +344,25 @@ def create_app(config_overrides=None):
             return jsonify(validation_error_response(e)), 400
 
         try:
+            # Learned patterns from the anonymized peer cohort make the
+            # recommendation engine data-driven: with more companies
+            # contributing, insights can reference what actually holds
+            # among similar companies, not just generic priors.
+            learned = None
+            try:
+                benchmark_payload = benchmarks.get_benchmarks_for_scorecard(
+                    body.scorecard, company_size=body.company_size, industry=body.industry,
+                )
+                learned = benchmark_payload.get("patterns") or None
+            except Exception:
+                logger.exception("Pattern lookup for insights failed; continuing without.")
+
             result = generate_insights(
                 body.scorecard,
                 company_size=body.company_size,
                 industry=body.industry,
                 benchmarks=body.benchmarks,
+                learned_patterns=learned,
             )
             audit_log.record(current_user.id, "insights_generated", resource_type="scorecard")
             return jsonify(result)
@@ -388,7 +413,28 @@ def create_app(config_overrides=None):
             insights_json=json.dumps(body.insights) if body.insights else None,
         )
         db.session.add(report)
+
+        # Learning-layer capture: only for users who opted in, and only an
+        # anonymized snapshot (no user id, no company name — see
+        # benchmarks.capture_snapshot). Failure here must never block the
+        # user's save, so it's wrapped and logged, not propagated.
+        if current_user.share_anonymized_data:
+            try:
+                benchmarks.capture_snapshot(body.form, body.scorecard)
+            except Exception:
+                logger.exception("Snapshot capture failed; report save continues.")
+
         db.session.commit()
+
+        # Materialize cohort stats/patterns — debounced (at most once per
+        # minute, cross-process via a Redis lock) and run off the request
+        # path in a background thread, so a burst of saves doesn't rebuild
+        # the benchmark tables on every request or hold this response up.
+        try:
+            benchmarks.maybe_recompute()
+        except Exception:
+            logger.exception("Benchmark recompute failed.")
+
         logger.info("Client report saved.", extra={"user_id": current_user.id, "report_id": report.id})
         audit_log.record(
             current_user.id, "client_report_created",
@@ -459,6 +505,176 @@ def create_app(config_overrides=None):
             }
             for e in entries
         ])
+
+    # -----------------------------------------------------------------
+    # DEI assistant (retrieval-grounded chat over the curated KB)
+    # -----------------------------------------------------------------
+
+    @app.route("/api/chat", methods=["POST"])
+    @login_required
+    @limiter.limit("20 per hour")  # costs real money per request, like /api/insights
+    def chat():
+        try:
+            body = ChatRequest.model_validate(request.get_json(force=True) or {})
+        except ValidationError as e:
+            return jsonify(validation_error_response(e)), 400
+
+        # Conversation ownership check happens before anything else — same
+        # scoping pattern as /api/clients: you can only append to your own
+        # conversations. A nonexistent or foreign conversation_id starts a
+        # new conversation rather than erroring, which keeps the frontend
+        # simple and leaks nothing about which IDs exist.
+        conversation = None
+        if body.conversation_id is not None:
+            conversation = Conversation.query.filter_by(
+                id=body.conversation_id, user_id=current_user.id).first()
+
+        if conversation is None:
+            conversation = Conversation(user_id=current_user.id)
+            db.session.add(conversation)
+            # Flush so conversation.id exists before messages reference it —
+            # otherwise the first turn inserts with a NULL conversation_id
+            # and fails the FK constraint.
+            db.session.flush()
+
+        history = [
+            {"role": m.role, "content": m.content}
+            for m in conversation.messages
+        ]
+
+        try:
+            result = chatbot.answer_question(
+                body.question,
+                history=history,
+                scorecard=body.scorecard,
+            )
+        except ChatGenerationError as e:
+            # Roll back the freshly-created (empty) conversation so a failed
+            # generation leaves nothing behind — no dangling user message,
+            # no hollow conversation row.
+            db.session.rollback()
+            return jsonify({"error": str(e)}), 502
+
+        # Persist both turns only after a successful answer, so a failed
+        # call doesn't leave a dangling user message with no reply.
+        db.session.add(ChatMessage(conversation_id=conversation.id, role="user",
+                                   content=body.question))
+        db.session.add(ChatMessage(
+            conversation_id=conversation.id, role="assistant",
+            content=result["answer"],
+            sources_json=json.dumps(result["sources"]) if result["sources"] else None,
+        ))
+        # Title from the first question — cheap, useful in the list view.
+        if conversation.title == "New conversation":
+            conversation.title = body.question[:80]
+        conversation.updated_at = datetime.now(timezone.utc)
+        db.session.commit()
+
+        audit_log.record(current_user.id, "chat_message_sent",
+                         resource_type="conversation", resource_id=conversation.id)
+        return jsonify({
+            "conversation_id": conversation.id,
+            "answer": result["answer"],
+            "sources": result["sources"],
+            "grounded": result["grounded"],
+        })
+
+    @app.route("/api/conversations", methods=["GET"])
+    @login_required
+    def list_conversations():
+        convos = (
+            Conversation.query.filter_by(user_id=current_user.id)
+            .order_by(Conversation.updated_at.desc())
+            .limit(100)
+            .all()
+        )
+        return jsonify([
+            {"id": c.id, "title": c.title, "updated_at": c.updated_at.isoformat()}
+            for c in convos
+        ])
+
+    @app.route("/api/conversations/<int:conversation_id>", methods=["GET"])
+    @login_required
+    def get_conversation(conversation_id):
+        convo = Conversation.query.filter_by(
+            id=conversation_id, user_id=current_user.id).first()
+        if not convo:
+            return jsonify({"error": "Not found."}), 404
+        return jsonify({
+            "id": convo.id,
+            "title": convo.title,
+            "updated_at": convo.updated_at.isoformat() if convo.updated_at else None,
+            "messages": [
+                {
+                    "role": m.role,
+                    "content": m.content,
+                    "sources": json.loads(m.sources_json) if m.sources_json else [],
+                    "created_at": m.created_at.isoformat() if m.created_at else None,
+                }
+                for m in convo.messages
+            ],
+        })
+
+    @app.route("/api/conversations/<int:conversation_id>", methods=["DELETE"])
+    @login_required
+    def delete_conversation(conversation_id):
+        convo = Conversation.query.filter_by(
+            id=conversation_id, user_id=current_user.id).first()
+        if not convo:
+            return jsonify({"error": "Not found."}), 404
+        db.session.delete(convo)
+        db.session.commit()
+        logger.info("Conversation deleted.", extra={
+            "user_id": current_user.id, "conversation_id": conversation_id})
+        return "", 204
+
+    # -----------------------------------------------------------------
+    # Benchmarks — the learning layer, served
+    # -----------------------------------------------------------------
+
+    @app.route("/api/benchmarks", methods=["GET"])
+    @login_required
+    def benchmarks_view():
+        """
+        Compares the user's CURRENT saved form state to anonymized cohorts.
+        The frontend sends its current scorecard (the one on screen) as a
+        query param-encoded JSON blob — kept to a compact allowlist of the
+        fields the comparison needs, never trusted beyond that.
+        """
+        try:
+            raw = request.args.get("scorecard", "")
+            scorecard = json.loads(raw) if raw else None
+        except ValueError:
+            return jsonify({"error": "Invalid scorecard parameter."}), 400
+        if not isinstance(scorecard, dict):
+            return jsonify({"error": "Missing or invalid scorecard parameter."}), 400
+
+        company_size = request.args.get("company_size", type=int)
+        industry = request.args.get("industry", type=str)
+
+        try:
+            payload = benchmarks.get_benchmarks_for_scorecard(
+                scorecard, company_size=company_size, industry=industry)
+        except Exception:
+            logger.exception("Benchmark lookup failed.")
+            return jsonify({"error": "Benchmark lookup failed."}), 500
+        return jsonify(payload)
+
+    @app.route("/api/sharing", methods=["POST"])
+    @login_required
+    def sharing():
+        try:
+            body = UpdateSharingRequest.model_validate(request.get_json(force=True) or {})
+        except ValidationError as e:
+            return jsonify(validation_error_response(e)), 400
+
+        current_user.share_anonymized_data = body.share_anonymized_data
+        db.session.commit()
+        audit_log.record(
+            current_user.id, "sharing_preference_changed",
+            detail="opted_in" if body.share_anonymized_data else "opted_out",
+        )
+        return jsonify({"share_anonymized_data": current_user.share_anonymized_data})
 
     # -----------------------------------------------------------------
     # Health check — for uptime monitoring

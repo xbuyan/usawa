@@ -37,6 +37,10 @@ services:
         generateValue: true
       - key: ANTHROPIC_API_KEY
         sync: false
+      # Optional — overrides the assistant/insights model (chatbot.py,
+      # ai_insights.py) without a code change. Leave unset for the default.
+      - key: ANTHROPIC_MODEL
+        sync: false
       - key: PYTHON_VERSION
         value: 3.12.0
       # Optional — the app runs fine without these (Sentry monitoring and
