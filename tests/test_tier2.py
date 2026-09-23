@@ -122,7 +122,7 @@ def test_score_endpoint_rejects_negative_promotion_counts(client, registered_use
 
 
 def test_register_validation_error_includes_field_name(client):
-    resp = client.post("/api/auth/register", json={"email": "not-an-email", "password": "short"})
+    resp = client.post("/api/auth/register", json={"terms_accepted": True, "email": "not-an-email", "password": "short"})
     assert resp.status_code == 400
     details = resp.get_json()["details"]
     fields = [d["field"] for d in details]

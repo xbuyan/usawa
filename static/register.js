@@ -7,8 +7,17 @@ document.getElementById("registerBtn").addEventListener("click", async () => {
   const organization_name = document.getElementById("orgName").value;
   const email = document.getElementById("email").value;
   const password = document.getElementById("password").value;
+  const terms_accepted = document.getElementById("termsAccepted").checked;
   const errorBox = document.getElementById("errorBox");
   errorBox.style.display = "none";
+
+  // Convenience only — the server enforces this too, since a client-side
+  // check can always be bypassed.
+  if (!terms_accepted) {
+    errorBox.textContent = "You must accept the Terms of Service to create an account.";
+    errorBox.style.display = "block";
+    return;
+  }
 
   try {
     const resp = await fetch("/api/auth/register", {
@@ -17,7 +26,7 @@ document.getElementById("registerBtn").addEventListener("click", async () => {
         "Content-Type": "application/json",
         "X-CSRFToken": getCsrfToken(),
       },
-      body: JSON.stringify({ email, password, organization_name }),
+      body: JSON.stringify({ email, password, organization_name, terms_accepted }),
     });
     const data = await resp.json();
     if (!resp.ok) {

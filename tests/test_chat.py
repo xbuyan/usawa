@@ -75,7 +75,7 @@ def test_chat_conversation_ownership_foreign_id_starts_new(client, registered_us
     other = client.post("/api/chat", json={"question": "mine"}).get_json()
 
     # Second user (fresh session) tries to use the first user's conversation id.
-    client.post("/api/auth/register", json={
+    client.post("/api/auth/register", json={"terms_accepted": True,
         "email": "mallory@example.com", "password": "different-horse-battery"})
     resp = client.post("/api/chat", json={
         "question": "sneaky", "conversation_id": other["conversation_id"]})

@@ -5,6 +5,7 @@ Routes:
   GET  /                        -> public landing page
   GET  /app                     -> the tool (requires login)
   GET  /login, /register        -> auth pages
+  GET  /terms                   -> Terms of Service (public; draft, not yet legally reviewed)
   GET  /forgot-password, /reset-password -> password reset pages
   GET  /verify-email            -> email verification landing
   POST /api/auth/register       -> create account
