@@ -32,19 +32,28 @@ Privacy guarantees, in order of enforcement:
 
 Scale path (the "millions of users" answer): percentiles are already
 materialized and reads are one indexed query. The write path is where
-scale actually lands, so recomputation is debounced — it runs at most
-once per RECOMPUTE_INTERVAL_SECONDS per process, instead of once per
-save (a million saves/day must not mean a million table rebuilds). Past
-that, move debounced recompute to a background job queue with a lock
-(RQ/Celery + Redis, both already in the stack's dependency orbit) and
-point capture at the queue; the functions below are already pure
-(compute from rows in, stats out) so they move without rewriting.
+scale actually lands, so recomputation is debounced and runs OFF the
+request path: maybe_recompute enqueues the rebuild instead of running
+it inline. Coordination is a Redis lock (SET NX EX, so a killed process
+can't wedge materialization past the TTL) — with 2 gunicorn workers,
+exactly one process rebuilds per debounce window, not two racing ones.
+When Redis is unavailable the code degrades to the original per-process
+debounce, and when TESTING it runs inline so tests can assert state
+immediately. The rebuild functions are pure (rows in, stats out) — if
+volume ever outgrows a daemon thread (e.g. a long rebuild starving the
+worker's thread pool), swap the thread for a real RQ/Celery worker
+pointing at the same functions without rewriting them.
 """
 
 import json
+import os
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
+
+import redis as redis_lib
+from flask import current_app
 
 from models import db, CompanySnapshot, BenchmarkStats, LearnedPattern
 
@@ -76,6 +85,52 @@ MIN_ABS_CORRELATION = 0.35
 # Debounce window for materialization (per process). See scale note above.
 RECOMPUTE_INTERVAL_SECONDS = 60
 _last_recompute = 0.0
+
+# Cross-process coordination for materialization. A single rebuild is
+# short (seconds at current volumes) but the lock TTL deliberately
+# outlives it: if a worker dies mid-rebuild, Redis expires the lock on
+# its own and materialization is only delayed, never wedged.
+RECOMPUTE_LOCK_KEY = "usawa:benchmarks:recompute-lock"
+RECOMPUTE_LOCK_TTL_SECONDS = 90
+
+# Sentinel returned by _acquire_recompute_lock when Redis is not
+# configured or unreachable: proceed without a cross-process lock.
+_NO_REDIS = object()
+
+
+def _get_redis_client():
+    """A redis client for cross-process locking, or _NO_REDIS when Redis
+    isn't configured or isn't reachable right now. Locking is a scale
+    optimization, not a correctness requirement (the per-process debounce
+    still applies underneath it), so any connection problem here degrades
+    silently rather than raising."""
+    redis_url = os.environ.get("REDIS_URL", "").strip()
+    if not redis_url:
+        return _NO_REDIS
+    try:
+        client = redis_lib.from_url(redis_url, socket_connect_timeout=1, socket_timeout=1)
+        client.ping()
+        return client
+    except Exception:
+        return _NO_REDIS
+
+
+def _acquire_recompute_lock() -> bool:
+    """True if this call won the right to recompute right now. SET NX EX
+    means exactly one of N racing gunicorn workers wins per TTL window;
+    the TTL (not an explicit release) is what bounds a dead worker's lock,
+    matching the module docstring's crash-safety note. No Redis reachable
+    -> True, so a Redis outage degrades to the pre-lock, per-process-only
+    debounce rather than freezing benchmarks from ever recomputing."""
+    client = _get_redis_client()
+    if client is _NO_REDIS:
+        return True
+    try:
+        return bool(
+            client.set(RECOMPUTE_LOCK_KEY, "1", nx=True, ex=RECOMPUTE_LOCK_TTL_SECONDS)
+        )
+    except Exception:
+        return True
 
 
 def size_band_for(company_size) -> Optional[str]:
@@ -278,14 +333,47 @@ def recompute_benchmark_stats() -> Dict[str, int]:
 
 def maybe_recompute(force: bool = False) -> Optional[Dict[str, int]]:
     """Debounced wrapper around recompute_benchmark_stats — at most once
-    per RECOMPUTE_INTERVAL_SECONDS per process unless forced. Returns the
-    counts dict when a recompute ran, else None."""
+    per RECOMPUTE_INTERVAL_SECONDS per process, plus a Redis lock so at
+    most one of the 2 gunicorn workers actually rebuilds per window (see
+    module docstring). The rebuild itself runs on a background thread so
+    the caller's request isn't held up by it, except:
+      - force=True runs inline and returns the counts dict, so callers
+        (and this module's own tests) can assert on the result.
+      - under TESTING, everything runs inline for the same reason —
+        tests should be able to assert the DB state immediately after
+        calling this, not race a background thread.
+    Returns the counts dict when a recompute ran inline, else None
+    (including when a recompute was *started* in the background — its
+    result isn't available to the caller)."""
     global _last_recompute
     now = time.monotonic()
     if not force and (now - _last_recompute) < RECOMPUTE_INTERVAL_SECONDS:
         return None
+    if not force and not _acquire_recompute_lock():
+        # Another worker already won this window's rebuild.
+        return None
     _last_recompute = now
-    return recompute_benchmark_stats()
+
+    try:
+        testing = bool(current_app and current_app.config.get("TESTING"))
+    except RuntimeError:
+        # No app context (e.g. called from a script) - safest to run inline.
+        testing = True
+
+    if force or testing:
+        return recompute_benchmark_stats()
+
+    app = current_app._get_current_object()
+
+    def _run():
+        with app.app_context():
+            try:
+                recompute_benchmark_stats()
+            except Exception:
+                app.logger.exception("Background benchmark recompute failed.")
+
+    threading.Thread(target=_run, daemon=True, name="benchmark-recompute").start()
+    return None
 
 
 # ---------------------------------------------------------------------------

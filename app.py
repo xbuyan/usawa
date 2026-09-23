@@ -427,8 +427,9 @@ def create_app(config_overrides=None):
         db.session.commit()
 
         # Materialize cohort stats/patterns — debounced (at most once per
-        # minute per process), so a burst of saves doesn't rebuild the
-        # benchmark tables on every request.
+        # minute, cross-process via a Redis lock) and run off the request
+        # path in a background thread, so a burst of saves doesn't rebuild
+        # the benchmark tables on every request or hold this response up.
         try:
             benchmarks.maybe_recompute()
         except Exception:

@@ -188,6 +188,63 @@ def test_maybe_recompute_is_debounced(app, learned_cohort, monkeypatch):
     benchmarks._last_recompute = 0.0  # reset for other tests
 
 
+def test_maybe_recompute_skips_when_another_worker_holds_the_lock(
+    app, learned_cohort, monkeypatch
+):
+    """Cross-process guard: if another gunicorn worker already won this
+    window's rebuild (i.e. already holds the Redis lock), this process
+    must not also rebuild, even though its own _last_recompute is stale."""
+    benchmarks._last_recompute = 0.0
+    calls = []
+    monkeypatch.setattr(
+        benchmarks, "recompute_benchmark_stats", lambda: calls.append(1)
+    )
+    monkeypatch.setattr(benchmarks, "_acquire_recompute_lock", lambda: False)
+
+    result = benchmarks.maybe_recompute(force=False)
+
+    assert result is None
+    assert calls == []
+    benchmarks._last_recompute = 0.0
+
+
+def test_maybe_recompute_runs_when_lock_is_won(app, learned_cohort, monkeypatch):
+    """Under TESTING, once the lock is won the rebuild still runs inline
+    (not on a background thread) so the caller can assert on the result
+    immediately."""
+    benchmarks._last_recompute = 0.0
+    monkeypatch.setattr(benchmarks, "_acquire_recompute_lock", lambda: True)
+
+    result = benchmarks.maybe_recompute(force=False)
+
+    assert result is not None
+    assert "benchmark_stats" in result
+    benchmarks._last_recompute = 0.0
+
+
+def test_acquire_recompute_lock_true_when_redis_unavailable(app, monkeypatch):
+    """No REDIS_URL configured (or Redis unreachable) must degrade to
+    'proceed' rather than silently blocking benchmarks from ever
+    recomputing again."""
+    monkeypatch.setattr(benchmarks, "_get_redis_client", lambda: benchmarks._NO_REDIS)
+    assert benchmarks._acquire_recompute_lock() is True
+
+
+def test_acquire_recompute_lock_is_mutually_exclusive(app):
+    """Real behavior against the real Redis instance used in CI: the
+    first caller in a window wins, a second caller in the same window
+    (simulating a second gunicorn worker) does not."""
+    client = benchmarks._get_redis_client()
+    if client is benchmarks._NO_REDIS:
+        pytest.skip("Redis not reachable in this environment")
+    client.delete(benchmarks.RECOMPUTE_LOCK_KEY)
+    try:
+        assert benchmarks._acquire_recompute_lock() is True
+        assert benchmarks._acquire_recompute_lock() is False
+    finally:
+        client.delete(benchmarks.RECOMPUTE_LOCK_KEY)
+
+
 # ---------------------------------------------------------------------------
 # Snapshot capture — privacy structure
 # ---------------------------------------------------------------------------
