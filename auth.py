@@ -24,7 +24,7 @@ from flask import Blueprint, request, jsonify, render_template, redirect, url_fo
 from flask_login import login_user, logout_user, login_required, current_user
 from pydantic import ValidationError
 
-from models import db, User
+from models import db, User, Conversation, ChatMessage, AuditLog
 from extensions import limiter
 import audit_log
 from tokens import (
@@ -34,7 +34,7 @@ from tokens import (
 from email_utils import send_email
 from schemas import (
     RegisterRequest, LoginRequest, ForgotPasswordRequest, ResetPasswordRequest,
-    validation_error_response,
+    DeleteAccountRequest, validation_error_response,
 )
 
 logger = logging.getLogger(__name__)
@@ -160,9 +160,76 @@ def login():
     return jsonify({"email": user.email})
 
 
-@auth_bp.route("/api/auth/logout", methods=["POST"])
+@auth_bp.route("/api/auth/delete-account", methods=["POST"])
+@limiter.limit("5 per hour")
 @login_required
-def logout():
+def delete_account():
+    """
+    Permanently deletes the current user's account and everything scoped
+    to it: saved client reports, chat conversations, and this user's own
+    audit trail.
+
+    Deletion order matters and is deliberate:
+      1. ChatMessage rows for this user's conversations, deleted
+         explicitly. Conversation.messages does have
+         cascade="all, delete-orphan", but that cascade only fires on an
+         ORM-level object delete — a bulk `.delete()` query (used below
+         for Conversation, for the same reason it's used for AuditLog)
+         bypasses ORM cascades entirely and executes as a raw SQL DELETE,
+         so without this explicit step these would be silently orphaned.
+      2. Conversation rows are deleted explicitly — User has no
+         relationship/cascade to Conversation, so these would otherwise
+         be left as orphaned rows referencing a deleted user_id (and,
+         under a DB that enforces the foreign key, would make the User
+         delete fail outright).
+      3. AuditLog rows for this user are deleted explicitly — deliberately
+         NOT cascaded from User (see AuditLog's docstring in models.py),
+         so this route is the one place that has to decide to do it.
+      4. ClientReport rows are removed automatically: User.reports has
+         cascade="all, delete-orphan", and the User row itself IS deleted
+         as an ORM object (db.session.delete(user), not a bulk query), so
+         that cascade fires correctly and needs no separate query.
+      5. The User row itself.
+
+    All in one transaction: either the whole account is gone, or (on
+    error) none of it is — never a half-deleted account.
+
+    This user's per-row audit trail is intentionally erased along with
+    the account (an audit log entry containing this user's own activity
+    is itself their personal data). The fact that a deletion happened is
+    instead recorded in the application's structured logs, which are not
+    scoped to any one user's audit history and aren't erased by it.
+    """
+    try:
+        body = DeleteAccountRequest.model_validate(request.get_json(force=True) or {})
+    except ValidationError as e:
+        return jsonify(validation_error_response(e)), 400
+
+    if not current_user.check_password(body.password):
+        logger.warning("Account deletion attempted with wrong password.",
+                        extra={"user_id": current_user.id})
+        return jsonify({"error": "Incorrect password."}), 401
+
+    user_id = current_user.id
+    user_email = current_user.email
+
+    conversation_ids = [
+        c.id for c in Conversation.query.filter_by(user_id=user_id).with_entities(Conversation.id)
+    ]
+    if conversation_ids:
+        ChatMessage.query.filter(
+            ChatMessage.conversation_id.in_(conversation_ids)
+        ).delete(synchronize_session=False)
+    Conversation.query.filter_by(user_id=user_id).delete(synchronize_session=False)
+    AuditLog.query.filter_by(user_id=user_id).delete(synchronize_session=False)
+    db.session.delete(current_user)
+    db.session.commit()
+
+    logger.info(
+        "Account permanently deleted.",
+        extra={"user_id": user_id, "email": user_email, "ip": request.remote_addr},
+    )
+
     logout_user()
     return "", 204
 

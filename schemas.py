@@ -35,6 +35,14 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=256)
 
 
+class DeleteAccountRequest(BaseModel):
+    # Re-entering the password (rather than a bare confirm=true) means a
+    # hijacked-but-still-open session, or a stray click, can't destroy the
+    # account — the same reasoning as requiring current_password to change
+    # a password, applied to a much less reversible action.
+    password: str = Field(min_length=1, max_length=256)
+
+
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
 
