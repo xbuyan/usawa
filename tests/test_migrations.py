@@ -246,3 +246,77 @@ def test_terms_accepted_at_migration_downgrades_cleanly(temp_db_path):
     cols = [r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
     conn.close()
     assert "terms_accepted_at" not in cols
+
+
+def test_org_backfill_migration_gives_each_existing_user_a_distinct_organization(temp_db_path):
+    # The whole point of a3f8b1c92d47: organization_id is NOT NULL, but
+    # unlike email_verified/share_anonymized_data there's no single
+    # constant that's correct for every existing user — each one needs
+    # their OWN new Organization row. Multiple pre-existing users here
+    # (not just one) is deliberate: it's the only way to catch a backfill
+    # bug that accidentally points every user at the same organization_id
+    # (e.g. a lastrowid/lookup mistake) instead of a genuinely distinct
+    # one per user.
+    result = _run_flask_db(["upgrade", "d5e7a3b1c9f2"], temp_db_path)
+    assert result.returncode == 0, result.stderr
+
+    conn = sqlite3.connect(temp_db_path)
+    conn.execute(
+        "INSERT INTO users (email, password_hash, organization_name, email_verified, "
+        "failed_login_attempts, share_anonymized_data, created_at) "
+        "VALUES ('withorg@company.com', 'hash', 'Withorg Ltd', 0, 0, 0, '2026-01-01 00:00:00')"
+    )
+    conn.execute(
+        "INSERT INTO users (email, password_hash, organization_name, email_verified, "
+        "failed_login_attempts, share_anonymized_data, created_at) "
+        "VALUES ('noorg@company.com', 'hash', NULL, 0, 0, 0, '2026-01-01 00:00:00')"
+    )
+    conn.commit()
+    conn.close()
+
+    result = _run_flask_db(["upgrade", "head"], temp_db_path)
+    assert result.returncode == 0, (
+        f"organization backfill migration failed against a table with "
+        f"pre-existing rows: {result.stderr}"
+    )
+
+    conn = sqlite3.connect(temp_db_path)
+    rows = conn.execute(
+        "SELECT email, organization_id FROM users ORDER BY email"
+    ).fetchall()
+    org_rows = conn.execute("SELECT id, name FROM organizations ORDER BY id").fetchall()
+    conn.close()
+
+    (noorg_email, noorg_org_id), (withorg_email, withorg_org_id) = rows
+    assert noorg_email == "noorg@company.com"
+    assert withorg_email == "withorg@company.com"
+
+    # Every user got an organization_id at all, and no two existing users
+    # were accidentally backfilled onto the SAME organization.
+    assert noorg_org_id is not None and withorg_org_id is not None
+    assert noorg_org_id != withorg_org_id
+
+    assert len(org_rows) == 2
+    org_names_by_id = dict(org_rows)
+    # A user who gave an organization_name at signup keeps it as their
+    # auto-created Organization's name.
+    assert org_names_by_id[withorg_org_id] == "Withorg Ltd"
+    # A user who never gave one gets a name derived from their email,
+    # not a bare "Untitled" placeholder.
+    assert org_names_by_id[noorg_org_id] == "noorg@company.com's organization"
+
+
+def test_org_backfill_migration_downgrades_cleanly(temp_db_path):
+    result = _run_flask_db(["upgrade", "head"], temp_db_path)
+    assert result.returncode == 0, result.stderr
+
+    result = _run_flask_db(["downgrade", "d5e7a3b1c9f2"], temp_db_path)
+    assert result.returncode == 0, result.stderr
+
+    conn = sqlite3.connect(temp_db_path)
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
+    tables = [r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+    conn.close()
+    assert "organization_id" not in cols
+    assert "organizations" not in tables

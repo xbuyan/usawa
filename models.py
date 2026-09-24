@@ -13,11 +13,40 @@ from werkzeug.security import generate_password_hash, check_password_hash
 db = SQLAlchemy()
 
 
+class Organization(db.Model):
+    """
+    A team/company workspace. Every user belongs to exactly one
+    Organization — solo signups get one auto-created for them (see
+    auth.register()); org-mates share visibility into each other's
+    ClientReport and AuditLog rows via a join on User.organization_id,
+    rather than each report row carrying its own "shared with" list.
+
+    Deliberately no direct relationship/cascade declared here from
+    Organization to User: an Organization outliving all its members (the
+    last member leaves, or is the org itself being wound down some other
+    way) is a decision for whatever feature handles that, not an ORM
+    side effect of a user row disappearing.
+    """
+    __tablename__ = "organizations"
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(255), nullable=False)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+
 class User(UserMixin, db.Model):
     __tablename__ = "users"
 
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(255), unique=True, nullable=False, index=True)
+    # Every user belongs to exactly one Organization (see Organization's
+    # docstring for the sharing model this enables). NOT NULL is the end
+    # state; a table with pre-existing users can't get there in a single
+    # step (see migration a3f8b1c92d47 for why — same NOT-NULL-migration
+    # lesson as email_verified, applied to a column that needs real
+    # per-row backfill data, not a constant).
+    organization_id = db.Column(db.Integer, db.ForeignKey("organizations.id"), nullable=False, index=True)
+    organization = db.relationship("Organization", backref=db.backref("members", lazy=True))
     password_hash = db.Column(db.String(255), nullable=False)
     organization_name = db.Column(db.String(255), nullable=True)
     email_verified = db.Column(db.Boolean, nullable=False, default=False)
