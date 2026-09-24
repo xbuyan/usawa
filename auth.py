@@ -24,7 +24,7 @@ from flask import Blueprint, request, jsonify, render_template, redirect, url_fo
 from flask_login import login_user, logout_user, login_required, current_user
 from pydantic import ValidationError
 
-from models import db, User, Conversation, ChatMessage, AuditLog
+from models import db, User, Organization, Conversation, ChatMessage, AuditLog
 from extensions import limiter
 import audit_log
 from tokens import (
@@ -94,8 +94,19 @@ def register():
     if User.query.filter_by(email=email).first():
         return jsonify({"error": "An account with this email already exists."}), 409
 
+    # Solo signup auto-creates an Organization for this one user — the
+    # same shape a future invited teammate joins into, rather than a
+    # separate "no org yet" state that invite/join logic would have to
+    # special-case. Naming falls back the same way the historical-user
+    # backfill migration (a3f8b1c92d47) does, for the same reason: a
+    # name that still means something to the user, not a bare "Untitled".
+    organization = Organization(name=body.organization_name or f"{email}'s organization")
+    db.session.add(organization)
+    db.session.flush()  # assigns organization.id without ending the transaction
+
     user = User(
         email=email,
+        organization_id=organization.id,
         organization_name=body.organization_name or None,
         terms_accepted_at=User._utcnow_naive(),
     )
