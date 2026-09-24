@@ -563,6 +563,10 @@ Current as of the September 2026 learning-layer phase:
 - Learning layer unvalidated against real cohort data: the math is tested
   against synthetic cohorts with known answers, but no real opted-in
   cohort exists yet, so real-world pattern quality is unknown
+- Signup consent applies to new accounts only: users created before the
+  consent gate have `terms_accepted_at = NULL` and there is no re-consent
+  flow, so their acceptance is unrecorded (deliberately not backfilled
+  with a fake timestamp). Needs a decision once real terms exist.
 - Chatbot answer quality needs human review over real conversations;
   the KB corpus (15 docs) is a starting point that should grow from
   ungrounded-question mining (chat_messages with NULL sources_json)
@@ -583,9 +587,13 @@ Current as of the September 2026 learning-layer phase:
 - No payment processing integrated yet (no Stripe/Paystack/Flutterwave/
   M-Pesa) — pricing tiers are now on the landing page, but there's no way
   to actually charge anyone through the product yet.
-- No formal Terms of Service / Privacy Policy / Data Processing Agreement
-  documents exist yet (offered to draft a first pass for legal review,
-  not yet done as of this writing).
+- No lawyer-reviewed Terms of Service / Privacy Policy / Data Processing
+  Agreement exist yet. What exists now: a signup consent gate (required
+  checkbox, enforced server-side, acceptance time stored in
+  `users.terms_accepted_at`) and a public `/terms` page that says on its
+  face that it is a working draft not yet reviewed by legal counsel. That
+  page is placeholder language, not a substitute for the real documents.
+  No Privacy Policy or DPA page exists at all.
 
 ---
 

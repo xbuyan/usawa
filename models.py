@@ -37,6 +37,12 @@ class User(UserMixin, db.Model):
     # see community stats; they just don't contribute to them).
     share_anonymized_data = db.Column(db.Boolean, nullable=False, default=False)
 
+    # When this user accepted the Terms of Service at signup. Nullable on
+    # purpose: accounts created before this consent gate existed have no
+    # recorded acceptance, and recording NULL is the honest state —
+    # backfilling a fake timestamp would claim consent that was never given.
+    terms_accepted_at = db.Column(db.DateTime, nullable=True)
+
     reports = db.relationship("ClientReport", backref="owner", lazy=True, cascade="all, delete-orphan")
 
     MAX_FAILED_ATTEMPTS = 5

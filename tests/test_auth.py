@@ -6,7 +6,7 @@ see another user's saved reports is a serious incident, not a bug ticket.
 
 
 def test_register_creates_account(client):
-    resp = client.post("/api/auth/register", json={
+    resp = client.post("/api/auth/register", json={"terms_accepted": True,
         "email": "new@example.com", "password": "strongpassword1",
     })
     assert resp.status_code == 201
@@ -14,14 +14,14 @@ def test_register_creates_account(client):
 
 
 def test_register_rejects_weak_password(client):
-    resp = client.post("/api/auth/register", json={
+    resp = client.post("/api/auth/register", json={"terms_accepted": True,
         "email": "weak@example.com", "password": "short",
     })
     assert resp.status_code == 400
 
 
 def test_register_rejects_invalid_email(client):
-    resp = client.post("/api/auth/register", json={
+    resp = client.post("/api/auth/register", json={"terms_accepted": True,
         "email": "not-an-email", "password": "strongpassword1",
     })
     assert resp.status_code == 400
@@ -29,7 +29,7 @@ def test_register_rejects_invalid_email(client):
 
 def test_register_rejects_duplicate_email(client, registered_user):
     client, email, password = registered_user
-    resp = client.post("/api/auth/register", json={
+    resp = client.post("/api/auth/register", json={"terms_accepted": True,
         "email": email, "password": "differentpassword1",
     })
     assert resp.status_code == 409
@@ -76,7 +76,7 @@ def test_landing_page_is_public(client):
 
 def test_user_cannot_see_another_users_saved_reports(client):
     # User A registers and saves a report.
-    client.post("/api/auth/register", json={"email": "a@example.com", "password": "passwordforalice"})
+    client.post("/api/auth/register", json={"terms_accepted": True, "email": "a@example.com", "password": "passwordforalice"})
     save_resp = client.post("/api/clients", json={
         "company_name": "Acme Inc",
         "form": {},
@@ -87,7 +87,7 @@ def test_user_cannot_see_another_users_saved_reports(client):
     client.post("/api/auth/logout")
 
     # User B registers — a fresh session — and should see nothing of A's.
-    client.post("/api/auth/register", json={"email": "b@example.com", "password": "passwordforbob"})
+    client.post("/api/auth/register", json={"terms_accepted": True, "email": "b@example.com", "password": "passwordforbob"})
     list_resp = client.get("/api/clients")
     assert list_resp.get_json() == []
 
@@ -118,3 +118,76 @@ def test_user_can_see_and_delete_their_own_report(client, registered_user):
 
     get_after_delete = client.get(f"/api/clients/{report_id}")
     assert get_after_delete.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Signup consent (Terms of Service)
+# ---------------------------------------------------------------------------
+
+import pytest
+from datetime import datetime, timedelta, timezone
+
+from models import User
+
+
+def _register(client, **overrides):
+    body = {"email": "consent@example.com", "password": "strongpassword1"}
+    body.update(overrides)
+    return client.post("/api/auth/register", json=body)
+
+
+def test_register_requires_terms_accepted_field(client, app):
+    body = {"email": "consent@example.com", "password": "strongpassword1"}
+    resp = client.post("/api/auth/register", json=body)
+    assert resp.status_code == 400
+    fields = [d["field"] for d in resp.get_json()["details"]]
+    assert "terms_accepted" in fields
+    assert User.query.filter_by(email="consent@example.com").first() is None
+
+
+def test_register_rejects_terms_accepted_false(client, app):
+    resp = _register(client, terms_accepted=False)
+    assert resp.status_code == 400
+    fields = [d["field"] for d in resp.get_json()["details"]]
+    assert "terms_accepted" in fields
+    assert User.query.filter_by(email="consent@example.com").first() is None
+
+
+@pytest.mark.parametrize("sloppy", ["true", "yes", "True", 1, "1", None, [], {}])
+def test_register_rejects_truthy_lookalikes_for_terms(client, app, sloppy):
+    # Consent must be an explicit JSON `true`. Strings/numbers that merely
+    # look truthy must not record consent.
+    resp = _register(client, terms_accepted=sloppy)
+    assert resp.status_code == 400
+    assert User.query.filter_by(email="consent@example.com").first() is None
+
+
+def test_register_records_terms_accepted_at(client, app):
+    before = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=5)
+    resp = _register(client, terms_accepted=True)
+    assert resp.status_code == 201
+    after = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(seconds=5)
+
+    user = User.query.filter_by(email="consent@example.com").first()
+    assert user is not None
+    assert user.terms_accepted_at is not None
+    assert before <= user.terms_accepted_at <= after
+
+
+def test_rejected_registration_does_not_log_the_user_in(client, app):
+    _register(client, terms_accepted=False)
+    assert client.get("/api/clients").status_code == 401
+
+
+def test_terms_page_is_public_and_states_draft_status(client):
+    resp = client.get("/terms")
+    assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+    assert "Terms of Service" in html
+    assert "not yet been reviewed by legal counsel" in html
+
+
+def test_register_page_has_terms_checkbox_linking_to_terms(client):
+    html = client.get("/register").get_data(as_text=True)
+    assert 'id="termsAccepted"' in html
+    assert 'href="/terms"' in html

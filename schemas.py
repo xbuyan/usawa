@@ -10,13 +10,24 @@ business logic runs.
 """
 
 from typing import Optional, Dict, List
-from pydantic import BaseModel, EmailStr, Field, ValidationError
+from pydantic import BaseModel, EmailStr, Field, StrictBool, ValidationError, field_validator
 
 
 class RegisterRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=10, max_length=256)
     organization_name: Optional[str] = Field(default=None, max_length=255)
+    # Required and must be exactly boolean True. StrictBool rejects
+    # truthy look-alikes ("true", "yes", 1) so consent can't be recorded
+    # by an accidental or sloppy client — only an explicit JSON `true`.
+    terms_accepted: StrictBool
+
+    @field_validator("terms_accepted")
+    @classmethod
+    def _terms_must_be_accepted(cls, v: bool) -> bool:
+        if v is not True:
+            raise ValueError("You must accept the Terms of Service to create an account.")
+        return v
 
 
 class LoginRequest(BaseModel):

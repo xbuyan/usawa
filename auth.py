@@ -60,6 +60,13 @@ def register_page():
     return render_template("register.html")
 
 
+@auth_bp.route("/terms", methods=["GET"])
+def terms_page():
+    # Public on purpose: people must be able to read the terms before
+    # they have an account (the signup checkbox links here).
+    return render_template("terms.html")
+
+
 @auth_bp.route("/forgot-password", methods=["GET"])
 def forgot_password_page():
     return render_template("forgot_password.html")
@@ -87,7 +94,11 @@ def register():
     if User.query.filter_by(email=email).first():
         return jsonify({"error": "An account with this email already exists."}), 409
 
-    user = User(email=email, organization_name=body.organization_name or None)
+    user = User(
+        email=email,
+        organization_name=body.organization_name or None,
+        terms_accepted_at=User._utcnow_naive(),
+    )
     user.set_password(body.password)
     db.session.add(user)
     db.session.commit()

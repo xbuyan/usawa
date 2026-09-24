@@ -70,7 +70,7 @@ def test_audit_log_only_shows_own_entries(client, app):
     from models import db, User
 
     # First user does some auditable things.
-    client.post("/api/auth/register", json={"email": "alice@example.com", "password": "correcthorse1"})
+    client.post("/api/auth/register", json={"terms_accepted": True, "email": "alice@example.com", "password": "correcthorse1"})
     client.post("/api/clients", json={
         "company_name": "Alice's Client",
         "form": {}, "scorecard": {"overall_score": 50},
@@ -78,7 +78,7 @@ def test_audit_log_only_shows_own_entries(client, app):
     client.post("/api/auth/logout")
 
     # Second user should never see the first user's audit trail.
-    client.post("/api/auth/register", json={"email": "bob@example.com", "password": "correcthorse2"})
+    client.post("/api/auth/register", json={"terms_accepted": True, "email": "bob@example.com", "password": "correcthorse2"})
     client.post("/api/auth/logout")
     client.post("/api/auth/login", json={"email": "bob@example.com", "password": "correcthorse2"})
     resp = client.get("/api/audit-log")

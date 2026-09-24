@@ -44,7 +44,7 @@ def registered_user(client):
     session cookie already set on `client` from the registration response."""
     email = "alice@example.com"
     password = "correcthorsebattery"
-    client.post("/api/auth/register", json={
+    client.post("/api/auth/register", json={"terms_accepted": True,
         "email": email, "password": password, "organization_name": "Alice Corp",
     })
     return client, email, password

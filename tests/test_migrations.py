@@ -198,3 +198,51 @@ def test_seeded_flag_migration_applies_to_table_with_existing_snapshot(temp_db_p
     conn.close()
     assert rows == [("software", 0)], \
         "pre-existing snapshot must survive and backfill to seeded=False"
+
+
+def test_terms_accepted_at_migration_applies_to_table_with_existing_user(temp_db_path):
+    # terms_accepted_at is nullable, so this is not the NOT NULL failure
+    # class — but the protocol is the same: real row first, then the
+    # migration must apply, and the existing user must come out with NULL
+    # (never a fabricated acceptance timestamp).
+    result = _run_flask_db(["upgrade", "c8a1e4f2b9d5"], temp_db_path)
+    assert result.returncode == 0, result.stderr
+
+    conn = sqlite3.connect(temp_db_path)
+    conn.execute(
+        "INSERT INTO users (email, password_hash, organization_name, email_verified, "
+        "failed_login_attempts, share_anonymized_data, created_at) "
+        "VALUES ('older@company.com', 'hash', 'RealCo', 0, 0, 0, '2026-01-01 00:00:00')"
+    )
+    conn.commit()
+    conn.close()
+
+    result = _run_flask_db(["upgrade", "head"], temp_db_path)
+    assert result.returncode == 0, (
+        f"terms_accepted_at migration failed against a table with a "
+        f"pre-existing row: {result.stderr}"
+    )
+
+    conn = sqlite3.connect(temp_db_path)
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
+    row = conn.execute(
+        "SELECT email, terms_accepted_at FROM users WHERE email = 'older@company.com'"
+    ).fetchone()
+    conn.close()
+
+    assert "terms_accepted_at" in cols
+    assert row == ("older@company.com", None), \
+        "pre-existing users must keep NULL — no fabricated consent"
+
+
+def test_terms_accepted_at_migration_downgrades_cleanly(temp_db_path):
+    result = _run_flask_db(["upgrade", "head"], temp_db_path)
+    assert result.returncode == 0, result.stderr
+
+    result = _run_flask_db(["downgrade", "c8a1e4f2b9d5"], temp_db_path)
+    assert result.returncode == 0, result.stderr
+
+    conn = sqlite3.connect(temp_db_path)
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
+    conn.close()
+    assert "terms_accepted_at" not in cols
