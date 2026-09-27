@@ -287,10 +287,11 @@ class AuditLog(db.Model):
     survive log rotation and answer "who looked at this client's data,
     and when" directly from the database.
 
-    No cascade delete from User: deliberately, an account deletion
-    feature (not yet built) should have to decide explicitly what happens
-    to that user's audit trail rather than silently losing it as a side
-    effect of an unrelated ORM cascade.
+    No cascade delete from User: deliberately, so that a change to
+    User's other relationships/cascades can't silently start deleting
+    audit history as a side effect. Account deletion (auth.py's
+    delete_account) is the one place that DOES delete a user's own
+    AuditLog rows, and does so explicitly and on purpose, not via cascade.
     """
     __tablename__ = "audit_logs"
 

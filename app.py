@@ -382,8 +382,15 @@ def create_app(config_overrides=None):
     @app.route("/api/clients", methods=["GET"])
     @login_required
     def list_clients():
+        # Org-wide, not user-scoped: this is the whole point of org/team
+        # sharing (Issue 3) — a teammate's saved audits should be visible
+        # to the rest of their organization. There is no per-report
+        # "shared with" column; visibility is derived entirely from the
+        # join below on User.organization_id, same join used everywhere
+        # else access is decided in this slice.
         reports = (
-            ClientReport.query.filter_by(user_id=current_user.id)
+            ClientReport.query.join(User, ClientReport.user_id == User.id)
+            .filter(User.organization_id == current_user.organization_id)
             .order_by(ClientReport.saved_at.desc())
             .all()
         )
@@ -395,6 +402,7 @@ def create_app(config_overrides=None):
                 "company_name": r.company_name,
                 "saved_at": r.saved_at.isoformat(),
                 "overall_score": scorecard.get("overall_score"),
+                "owner_email": r.owner.email,
             })
         return jsonify(results)
 
@@ -446,7 +454,12 @@ def create_app(config_overrides=None):
     @app.route("/api/clients/<int:client_id>", methods=["GET"])
     @login_required
     def get_client(client_id):
-        report = ClientReport.query.filter_by(id=client_id, user_id=current_user.id).first()
+        # Same org-wide visibility as list_clients — see its comment.
+        report = (
+            ClientReport.query.join(User, ClientReport.user_id == User.id)
+            .filter(ClientReport.id == client_id, User.organization_id == current_user.organization_id)
+            .first()
+        )
         if not report:
             return jsonify({"error": "Not found."}), 404
         audit_log.record(
@@ -460,14 +473,38 @@ def create_app(config_overrides=None):
             "form": json.loads(report.form_json),
             "scorecard": json.loads(report.scorecard_json),
             "insights": json.loads(report.insights_json) if report.insights_json else None,
+            "owner_email": report.owner.email,
         })
 
     @app.route("/api/clients/<int:client_id>", methods=["DELETE"])
     @login_required
     def delete_client(client_id):
-        report = ClientReport.query.filter_by(id=client_id, user_id=current_user.id).first()
+        # Deliberately NOT org-wide the way list/get are: deletion is a
+        # much higher-consequence action than visibility, and there's no
+        # owner/admin role yet to say who in an org SHOULD be allowed to
+        # delete a teammate's work (tracked in PROJECT_STATUS.md's known
+        # gaps, alongside the same limitation on inviting). Until that
+        # role model exists, only the report's own creator can delete it
+        # — a teammate can see it, but not remove it out from under them.
+        #
+        # Two different "no" cases, checked separately and answered
+        # differently: a report outside this user's ORG isn't something
+        # they're allowed to know exists at all (404, same as today). A
+        # report INSIDE their org that isn't theirs to delete is a report
+        # they can already see in their own list_clients() response —
+        # telling them 404 for something they can plainly see would be
+        # actively misleading, so that case is a 403 instead.
+        report = (
+            ClientReport.query.join(User, ClientReport.user_id == User.id)
+            .filter(ClientReport.id == client_id, User.organization_id == current_user.organization_id)
+            .first()
+        )
         if not report:
             return jsonify({"error": "Not found."}), 404
+        if report.user_id != current_user.id:
+            return jsonify({
+                "error": "Only the teammate who saved this report can delete it."
+            }), 403
         company_name = report.company_name
         db.session.delete(report)
         db.session.commit()
@@ -485,12 +522,16 @@ def create_app(config_overrides=None):
     @app.route("/api/audit-log", methods=["GET"])
     @login_required
     def audit_log_view():
-        # Scoped to current_user, same pattern as /api/clients — a user
-        # sees their own history, not anyone else's. Capped at the 200
-        # most recent entries; this is meant for "what happened recently
-        # on my account," not full historical export/analysis.
+        # Org-wide, same reasoning and same join as list_clients/get_client
+        # above: a DEI/compliance activity trail is more useful to a team
+        # when it shows the whole team's activity, not just one person's.
+        # Capped at the 200 most recent entries across the whole org; this
+        # is meant for "what happened recently," not full historical
+        # export/analysis.
         entries = (
-            AuditLog.query.filter_by(user_id=current_user.id)
+            db.session.query(AuditLog, User.email)
+            .join(User, AuditLog.user_id == User.id)
+            .filter(User.organization_id == current_user.organization_id)
             .order_by(AuditLog.created_at.desc())
             .limit(200)
             .all()
@@ -503,8 +544,9 @@ def create_app(config_overrides=None):
                 "detail": e.detail,
                 "ip_address": e.ip_address,
                 "created_at": e.created_at.isoformat(),
+                "user_email": user_email,
             }
-            for e in entries
+            for e, user_email in entries
         ])
 
     # -----------------------------------------------------------------
