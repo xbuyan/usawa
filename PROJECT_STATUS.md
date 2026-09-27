@@ -570,6 +570,16 @@ Current as of the September 2026 learning-layer phase:
 - Chatbot answer quality needs human review over real conversations;
   the KB corpus (15 docs) is a starting point that should grow from
   ungrounded-question mining (chat_messages with NULL sources_json)
+- Org/team sharing (Issue 3): ClientReport and AuditLog visibility is
+  now org-wide (any member of an Organization can see every teammate's
+  saved reports and the whole org's audit trail — see /api/clients,
+  /api/clients/<id>, /api/audit-log in app.py). Deletion is deliberately
+  NOT org-wide: only a report's original creator can delete it, since
+  there's no owner/admin role yet to say who else should be allowed to.
+  Same underlying gap as the invite flow's "any member can invite"
+  limitation (see feat/org-invite branch) — worth a real role model
+  before pitching to an org that would ask "who can see/remove our
+  data and who decided that"
 
 ## Known gaps — legal/business side (NOT engineering-fixable, flagged explicitly)
 
